@@ -47,10 +47,21 @@ def build_publish_command(
         cmd += ["-stream_loop", "-1"]
     if camera.realtime:
         cmd += ["-re"]
+        if camera.start_offset:
+            # The seek below is an *output* option, so ffmpeg has to read and
+            # discard the skipped head. Burst through it instead of letting -re
+            # pace it in real time, which would delay the stream by start_offset.
+            cmd += ["-readrate_initial_burst", _format_seconds(camera.start_offset + 1)]
     cmd += ["-fflags", "+genpts"]
+    cmd += ["-i", str(camera.source)]
+
+    # Seeking on the output rather than the input. An input -ss combined with
+    # -stream_loop restarts timestamps at the seek point on every loop, which
+    # makes DTS run backwards and floods the log with "Non-monotonic DTS".
+    # Seeking on the output skips the head exactly once, so later loops replay
+    # the whole file and the feed simply stays phase-shifted from its peers.
     if camera.start_offset:
         cmd += ["-ss", _format_seconds(camera.start_offset)]
-    cmd += ["-i", str(camera.source)]
 
     # --- video ----------------------------------------------------------------
     if mode is StreamMode.COPY:
