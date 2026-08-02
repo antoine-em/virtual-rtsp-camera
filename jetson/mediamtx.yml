@@ -1,0 +1,78 @@
+# MediaMTX configuration for synthetic toll-gate RTSP
+# Deployed on: NVIDIA Jetson AGX Orin
+
+# General settings
+general:
+  # Log level: debug, info, warning, error, none
+  log_level: warning
+
+  # Log format: cli, text, json
+  log_format: cli
+
+# RTSP protocols
+protocols:
+  # WebRTC protocol: disabled by default
+  webrtc:
+    enabled: false
+
+  # RTSP over TCP: enabled
+  rtsp:
+    enabled: true
+    # Use TCP transport for RTSP
+    transport: tcp
+
+  # RTMP: disabled (not needed for RTSP publishing)
+  rtmp:
+    enabled: false
+
+  # HLS: optional, disabled by default
+  hls:
+    enabled: false
+
+# RTSP server
+rtsp:
+  # RTSP server address
+  address: ":8554"
+
+# RTMP server (disabled)
+rtmps:
+  enabled: false
+
+# HTTP API
+api:
+  address: ":9997"
+
+# HTTP monitoring (Prometheus)
+metrics:
+  address: ":9998"
+
+# HTTP logging
+logging:
+  # HTTP logging address
+  address: ":9999"
+  format: cli
+  level: warning
+
+# Path settings
+paths:
+  # Accept all paths dynamically
+  all:
+    # Maximum latency (milliseconds)
+    max_latency: 500
+
+    # Read timeout
+    read_timeout: 10s
+
+    # Write timeout
+    write_timeout: 10s
+
+    # Run background processes
+    run: ""
+
+    # Publisher source
+    source: ""
+
+# Publisher settings
+publishers:
+  allow: []
+  deny: []
