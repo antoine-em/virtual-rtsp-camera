@@ -1,0 +1,234 @@
+"""Configuration models for virtual RTSP cameras."""
+
+from __future__ import annotations
+
+import re
+from enum import Enum
+from pathlib import Path
+from typing import Optional
+from urllib.parse import quote
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+CAMERA_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+RESOLUTION_RE = re.compile(r"^(\d+)x(\d+)$")
+BITRATE_RE = re.compile(r"^\d+(\.\d+)?[kKmM]?$")
+#: MediaMTX only accepts this character set in plain credentials.
+CREDENTIAL_RE = re.compile(r"^[a-zA-Z0-9!$()*+.;<=>\[\]^_\-{}@#&]+$")
+CREDENTIAL_CHARS = "a-z A-Z 0-9 ! $ ( ) * + . ; < = > [ ] ^ _ - { } @ # &"
+
+
+class StreamMode(str, Enum):
+    """How the source video is turned into an RTSP stream."""
+
+    AUTO = "auto"
+    COPY = "copy"
+    TRANSCODE = "transcode"
+
+
+class Transport(str, Enum):
+    TCP = "tcp"
+    UDP = "udp"
+
+
+class VideoCodec(str, Enum):
+    H264 = "h264"
+    H265 = "h265"
+
+
+ENCODER_BY_CODEC = {
+    VideoCodec.H264: "libx264",
+    VideoCodec.H265: "libx265",
+}
+
+#: Source codecs that can be re-published without re-encoding.
+RTSP_PASSTHROUGH_CODECS = frozenset({"h264", "hevc", "h265"})
+
+
+class VideoSettings(BaseModel):
+    """Encoding parameters, only used when a camera actually transcodes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    codec: VideoCodec = VideoCodec.H264
+    encoder: Optional[str] = Field(
+        default=None,
+        description="Explicit ffmpeg encoder, e.g. h264_nvenc. Overrides `codec`.",
+    )
+    resolution: Optional[str] = Field(default=None, description="WIDTHxHEIGHT, e.g. 1280x720")
+    fps: Optional[float] = Field(default=None, gt=0, le=240)
+    bitrate: Optional[str] = Field(default=None, description="e.g. 2M or 800k")
+    gop: Optional[int] = Field(default=None, gt=0, description="Keyframe interval in frames")
+    preset: str = "veryfast"
+
+    @field_validator("resolution")
+    @classmethod
+    def _check_resolution(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not RESOLUTION_RE.match(value):
+            raise ValueError(f"resolution must look like 1280x720, got {value!r}")
+        return value
+
+    @field_validator("bitrate")
+    @classmethod
+    def _check_bitrate(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not BITRATE_RE.match(value):
+            raise ValueError(f"bitrate must look like 2M or 800k, got {value!r}")
+        return value
+
+    @property
+    def ffmpeg_encoder(self) -> str:
+        return self.encoder or ENCODER_BY_CODEC[self.codec]
+
+    def scale_size(self) -> Optional[tuple[int, int]]:
+        if self.resolution is None:
+            return None
+        match = RESOLUTION_RE.match(self.resolution)
+        assert match is not None  # guaranteed by the validator
+        return int(match.group(1)), int(match.group(2))
+
+
+class CameraSpec(BaseModel):
+    """A single virtual camera fed by a video file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    source: Path
+    enabled: bool = True
+    loop: bool = True
+    realtime: bool = Field(default=True, description="Pace the file at native frame rate (-re)")
+    mode: StreamMode = StreamMode.AUTO
+    start_offset: float = Field(default=0.0, ge=0, description="Seek into the file, in seconds")
+    transport: Transport = Transport.TCP
+    audio: bool = False
+    port: Optional[int] = Field(
+        default=None,
+        gt=0,
+        le=65535,
+        description="Override the RTSP port for this camera (spawns a dedicated server)",
+    )
+    video: VideoSettings = Field(default_factory=VideoSettings)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        if not CAMERA_NAME_RE.match(value):
+            raise ValueError(
+                f"camera name {value!r} is not a valid RTSP path segment "
+                "(use letters, digits, '_', '-', '.')"
+            )
+        return value
+
+    @field_validator("source")
+    @classmethod
+    def _expand_source(cls, value: Path) -> Path:
+        return Path(value).expanduser()
+
+    def path_suffix(self) -> str:
+        return self.name
+
+
+class AuthSpec(BaseModel):
+    """Credentials required from RTSP readers."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+    @field_validator("username", "password")
+    @classmethod
+    def _check_credential(cls, value: str) -> str:
+        if not CREDENTIAL_RE.match(value):
+            raise ValueError(
+                "credentials may only contain the characters accepted by MediaMTX: "
+                f"{CREDENTIAL_CHARS}"
+            )
+        return value
+
+
+class ServerSpec(BaseModel):
+    """MediaMTX server settings shared by all cameras."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    host: str = Field(default="0.0.0.0", description="Bind address for the RTSP listener")
+    rtsp_port: int = Field(default=8554, gt=0, le=65535)
+    api_port: int = Field(default=9997, gt=0, le=65535)
+    rtp_port: int = Field(
+        default=8000,
+        gt=0,
+        le=65500,
+        description="Base of the UDP RTP/RTCP port block (8 ports per server instance)",
+    )
+    log_level: str = "warn"
+    read_timeout: str = "10s"
+    write_timeout: str = "10s"
+    auth: Optional[AuthSpec] = None
+
+    @field_validator("log_level")
+    @classmethod
+    def _check_log_level(cls, value: str) -> str:
+        allowed = {"error", "warn", "info", "debug"}
+        if value not in allowed:
+            raise ValueError(f"log_level must be one of {sorted(allowed)}, got {value!r}")
+        return value
+
+
+class CameraStack(BaseModel):
+    """Top-level configuration: one server definition plus its cameras."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    server: ServerSpec = Field(default_factory=ServerSpec)
+    cameras: list[CameraSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_unique_paths(self) -> "CameraStack":
+        seen: set[tuple[int, str]] = set()
+        for camera in self.cameras:
+            key = (camera.port or self.server.rtsp_port, camera.name)
+            if key in seen:
+                raise ValueError(
+                    f"duplicate camera path: rtsp://...:{key[0]}/{key[1]} is declared twice"
+                )
+            seen.add(key)
+        return self
+
+    @property
+    def enabled_cameras(self) -> list[CameraSpec]:
+        return [camera for camera in self.cameras if camera.enabled]
+
+    def effective_port(self, camera: CameraSpec) -> int:
+        return camera.port or self.server.rtsp_port
+
+    def publish_url(self, camera: CameraSpec) -> str:
+        """Loopback URL the local ffmpeg publisher pushes to (never authenticated)."""
+        return f"rtsp://127.0.0.1:{self.effective_port(camera)}/{camera.path_suffix()}"
+
+    def read_url(
+        self,
+        camera: CameraSpec,
+        host: Optional[str] = None,
+        *,
+        with_credentials: bool = True,
+    ) -> str:
+        """URL a client uses to read the camera."""
+        display_host = host or self.display_host()
+        credentials = ""
+        if with_credentials and self.server.auth is not None:
+            credentials = (
+                f"{quote(self.server.auth.username, safe='')}:"
+                f"{quote(self.server.auth.password, safe='')}@"
+            )
+        port = self.effective_port(camera)
+        return f"rtsp://{credentials}{display_host}:{port}/{camera.path_suffix()}"
+
+    def display_host(self) -> str:
+        if self.server.host in ("0.0.0.0", "::", ""):
+            return "127.0.0.1"
+        return self.server.host
