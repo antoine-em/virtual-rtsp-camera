@@ -109,10 +109,13 @@ to push as fast as possible), `--start-offset` (seek into the file so feeds are 
 For anything beyond a couple of cameras, use a YAML file:
 
 ```bash
-uv run vcam init                 # writes ./cameras.yaml
-uv run vcam list                 # table of cameras and their URLs
-uv run vcam urls                 # one URL per line, for scripts
-uv run vcam run                  # picks up ./cameras.yaml automatically
+uv run vcam init                          # writes ./cameras.yaml
+uv run vcam init -s a.mp4 -s b.mp4        # ...seeded with two cameras
+uv run vcam add videos/dock.mp4 -n dock   # append a camera to it
+uv run vcam show                          # print the resolved config
+uv run vcam list                          # table of cameras and their URLs
+uv run vcam urls                          # one URL per line, for scripts
+uv run vcam run                           # picks up ./cameras.yaml automatically
 ```
 
 ```yaml
