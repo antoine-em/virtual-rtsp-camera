@@ -170,20 +170,22 @@ Legacy `streams.yaml` manifests (`streams:` with `offset_seconds`) are accepted 
 uv run vcam list -c streams.yaml
 ```
 
-### `start_offset` and stream copy
+### How `start_offset` behaves
 
-`start_offset` is a plain ffmpeg seek. In `copy` mode there is no re-encode, so ffmpeg can
-only start on a keyframe and the seek snaps back to the nearest preceding one. With a file
-encoded at the default GOP of 250 frames, offsets smaller than ~10 s can therefore be a
-no-op and the feeds stay in sync.
+`start_offset` is applied **once, at startup**: the camera skips into the file, and every
+later loop replays the file from the beginning. The feed therefore stays permanently
+phase-shifted from its peers, which is the point — it stops several cameras fed from the
+same clip showing identical frames.
 
-If you need reliably de-synced feeds either use a source with frequent keyframes:
+In `copy` mode the seek still has to land on a keyframe, so it snaps to the nearest one.
+With a file encoded at the default GOP of 250 frames that quantises the offset to ~10 s
+steps. If you need precise offsets, either re-encode the source with frequent keyframes:
 
 ```bash
 ffmpeg -i source.mp4 -c:v libx264 -g 25 -keyint_min 25 -sc_threshold 0 -c:a copy short-gop.mp4
 ```
 
-or switch that camera to `mode: transcode`, where the seek is frame accurate.
+or set `mode: transcode` on that camera, where the seek is frame accurate.
 
 ## One port or many?
 
