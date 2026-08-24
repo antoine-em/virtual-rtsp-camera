@@ -1,0 +1,69 @@
+# syntax=docker/dockerfile:1
+#
+# vcam — serve local video files as looping virtual RTSP cameras.
+#
+# Stages:
+#   build   - build the vcam wheel
+#   test    - unit test suite      (docker build --target test)
+#   runtime - lean serving image   (default; bundles ffmpeg + MediaMTX)
+
+ARG PYTHON_VERSION=3.12
+
+# ---------------------------------------------------------------------------
+# Build the wheel
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS build
+RUN pip install --no-cache-dir uv
+WORKDIR /src
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+RUN uv build --wheel --out-dir /out
+
+# ---------------------------------------------------------------------------
+# Unit tests (no ffmpeg needed - the suite is pure unit tests)
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS test
+RUN pip install --no-cache-dir uv
+WORKDIR /src
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+COPY tests ./tests
+RUN uv sync --frozen
+CMD ["uv", "run", "pytest"]
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS runtime
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home vcam
+
+WORKDIR /vcam
+
+COPY --from=build /out/vcam-*.whl /tmp/wheel/
+RUN pip install --no-cache-dir /tmp/wheel/vcam-*.whl && rm -rf /tmp/wheel
+
+# Helper to generate throwaway sample clips inside the image.
+COPY scripts/make-sample-videos.sh /opt/vcam/scripts/make-sample-videos.sh
+RUN chmod +x /opt/vcam/scripts/make-sample-videos.sh
+
+# Pre-fetch the MediaMTX binary for this image's architecture so `vcam run`
+# works offline. Runs as the vcam user, so it caches in /home/vcam/.cache/vcam.
+USER vcam
+RUN vcam install-server
+
+# RTSP listener + MediaMTX HTTP API (the API is loopback-only).
+EXPOSE 8554 9997
+
+# Probes the MediaMTX API of the default server group. If you override
+# `api_port` in your config, adjust or drop the healthcheck.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9997/v3/info', timeout=3).status == 200 else 1)"
+
+ENTRYPOINT ["vcam"]
+CMD ["run"]

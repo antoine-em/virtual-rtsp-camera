@@ -1,0 +1,18 @@
+services:
+  vcam:
+    build: .
+    image: vcam:latest
+    ports:
+      - "8554:8554"
+      # - "8555:8555"   # cameras with their own `port:` in cameras.yaml
+    volumes:
+      - ./cameras.yaml:/vcam/cameras.yaml:ro
+      - ./videos:/vcam/videos:ro
+    restart: unless-stopped
+
+  # Unit tests:  docker compose --profile test run --rm test
+  test:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
