@@ -329,7 +329,11 @@ def run(
     noise_level: Annotated[
         Optional[int],
         typer.Option(
-            "--noise-level", min=1, max=100, help="Noise amplitude for --simulation noise (default 30)."
+            "--simulation-noise-level",
+            "--noise-level",
+            min=1,
+            max=100,
+            help="Noise amplitude for --simulation noise (default 30).",
         ),
     ] = None,
     simulation_interval: Annotated[
@@ -925,13 +929,27 @@ def doctor(
 
 @app.command("install-server")
 def install_server(
-    version: Annotated[str, typer.Option("--version", help="MediaMTX release tag.")] = binaries.DEFAULT_VERSION,
+    version: Annotated[
+        str,
+        typer.Option(
+            "--mediamtx-version",
+            help="Release to download (same flag name as `run` and `doctor`).",
+        ),
+    ] = binaries.DEFAULT_VERSION,
     force: Annotated[bool, typer.Option("--force", help="Re-download even if cached.")] = False,
     verify: Annotated[
-        bool, typer.Option("--verify/--no-verify", help="Verify the SHA-256 checksum.")
+        bool,
+        typer.Option(
+            "--verify-checksum/--no-verify-checksum",
+            help="Verify the SHA-256 checksum of the download.",
+        ),
     ] = True,
 ) -> None:
-    """Download the MediaMTX binary into the local cache."""
+    """Download the MediaMTX binary into the local cache.
+
+    Unrelated to `vcam service install`, which registers vcam itself as a
+    background service. This command only fetches the RTSP server binary.
+    """
     target = binaries.install_path(version)
     if target.is_file() and not force:
         console.print(f"already installed: [bold]{target}[/]")
@@ -977,6 +995,8 @@ def install(
     Bakes the resolved config path into the unit so the service is
     self-contained.  Put all camera settings in the YAML file; edit the unit
     afterwards if you need extra CLI flags.
+
+    Not to be confused with `vcam install-server`, which downloads MediaMTX.
     """
     path = config or find_default_config()
     if path is None:
