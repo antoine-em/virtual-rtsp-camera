@@ -63,6 +63,10 @@ RUN pip install --no-cache-dir /tmp/wheel/vcam-*.whl \
 COPY scripts/make-sample-videos.sh /opt/vcam/scripts/make-sample-videos.sh
 RUN chmod +x /opt/vcam/scripts/make-sample-videos.sh
 
+# Entrypoint wrapper: starts a demo camera when no config is provided.
+COPY scripts/entrypoint.sh /opt/vcam/entrypoint.sh
+RUN chmod +x /opt/vcam/entrypoint.sh
+
 # Pre-fetch the MediaMTX binary for this image's architecture so `vcam run`
 # works offline. Runs as the vcam user, so it caches in /home/vcam/.cache/vcam.
 USER vcam
@@ -76,5 +80,5 @@ EXPOSE 8554 9997
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
     CMD python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9997/v3/info', timeout=3).status == 200 else 1)"
 
-ENTRYPOINT ["vcam"]
+ENTRYPOINT ["/opt/vcam/entrypoint.sh"]
 CMD ["run"]
