@@ -220,6 +220,14 @@ class ServerSpec(BaseModel):
     read_timeout: str = "10s"
     write_timeout: str = "10s"
     auth: Optional[AuthSpec] = None
+    ntp_server: Optional[str] = Field(
+        default=None,
+        description=(
+            "Sync the container clock to this NTP server before starting. "
+            "Only valid when running inside a Docker container with cap_add: [SYS_TIME]. "
+            "Has no effect and is rejected outside a container."
+        ),
+    )
 
     @field_validator("log_level")
     @classmethod

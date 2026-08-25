@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__, binaries
+from .ntp import NTPError, apply_offset, has_sys_time_cap, measure_offset, running_in_container
 from .config import (
     ConfigError,
     dump_stack,
@@ -39,6 +40,8 @@ from .models import (
 )
 from .probe import ProbeError, probe as probe_source, try_probe
 from .supervisor import CameraRuntime, Supervisor, SupervisorError
+from . import service as _service
+from .service import ServiceError
 
 console = Console()
 error_console = Console(stderr=True)
@@ -60,10 +63,19 @@ app = typer.Typer(
 
 ConfigOption = Annotated[
     Optional[Path],
-    typer.Option("--config", "-c", help="YAML config file (default: ./cameras.yaml)."),
+    typer.Option(
+        "--config",
+        "-c",
+        help="YAML config file (default: ./cameras.yaml, .yml, or vcam.yaml/.yml).",
+    ),
 ]
 HostOption = Annotated[
-    Optional[str], typer.Option("--host", help="Bind address for the RTSP listener.")
+    Optional[str],
+    typer.Option("--host", help="Bind address for the RTSP listener (default: 0.0.0.0)."),
+]
+DisplayHostOption = Annotated[
+    Optional[str],
+    typer.Option("--host", help="Hostname or IP to print in the URLs (default: from config)."),
 ]
 
 
@@ -179,6 +191,7 @@ def _apply_overrides(
     log_level: Optional[str],
     username: Optional[str],
     password: Optional[str],
+    ntp_server: Optional[str],
     mode: Optional[StreamMode],
     loop: Optional[bool],
     realtime: Optional[bool],
@@ -198,6 +211,8 @@ def _apply_overrides(
         server.api_port = api_port
     if log_level is not None:
         server.log_level = log_level
+    if ntp_server is not None:
+        server.ntp_server = ntp_server
     if username or password:
         if not (username and password):
             raise _fail("--username and --password must be provided together")
@@ -254,7 +269,8 @@ def run(
         Optional[int], typer.Option("--port", "-p", help="Shared RTSP port (default: 8554).")
     ] = None,
     api_port: Annotated[
-        Optional[int], typer.Option("--api-port", help="MediaMTX HTTP API port (loopback only).")
+        Optional[int],
+        typer.Option("--api-port", help="MediaMTX HTTP API port, loopback only (default: 9997)."),
     ] = None,
     mode: Annotated[
         Optional[StreamMode],
@@ -264,18 +280,22 @@ def run(
         ),
     ] = None,
     loop: Annotated[
-        Optional[bool], typer.Option("--loop/--no-loop", help="Loop the file forever.")
+        Optional[bool], typer.Option("--loop/--no-loop", help="Loop the file forever (default: on).")
     ] = None,
     realtime: Annotated[
         Optional[bool],
-        typer.Option("--realtime/--no-realtime", help="Pace the file at native frame rate."),
+        typer.Option(
+            "--realtime/--no-realtime",
+            help="Pace the file at native frame rate (default: on).",
+        ),
     ] = None,
     start_offset: Annotated[
         Optional[float],
         typer.Option("--start-offset", help="Seek N seconds into the file (de-syncs feeds)."),
     ] = None,
     transport: Annotated[
-        Optional[Transport], typer.Option("--transport", help="RTSP transport for publishing.")
+        Optional[Transport],
+        typer.Option("--transport", help="RTSP transport for publishing (default: tcp)."),
     ] = None,
     resolution: Annotated[
         Optional[str], typer.Option("--resolution", help="Transcode target, e.g. 1280x720.")
@@ -293,7 +313,8 @@ def run(
         Optional[int], typer.Option("--gop", help="Keyframe interval in frames when transcoding.")
     ] = None,
     preset: Annotated[
-        Optional[str], typer.Option("--preset", help="x264/x265 preset when transcoding.")
+        Optional[str],
+        typer.Option("--preset", help="x264/x265 preset when transcoding (default: veryfast)."),
     ] = None,
     audio: Annotated[
         Optional[bool], typer.Option("--audio/--no-audio", help="Publish audio (off by default).")
@@ -307,7 +328,9 @@ def run(
     ] = None,
     noise_level: Annotated[
         Optional[int],
-        typer.Option("--noise-level", min=1, max=100, help="Noise amplitude for --simulation noise."),
+        typer.Option(
+            "--noise-level", min=1, max=100, help="Noise amplitude for --simulation noise (default 30)."
+        ),
     ] = None,
     simulation_interval: Annotated[
         Optional[float],
@@ -336,7 +359,11 @@ def run(
         Optional[str], typer.Option("--password", "-P", help="Password for --username.")
     ] = None,
     log_level: Annotated[
-        Optional[str], typer.Option("--server-log-level", help="MediaMTX log level.")
+        Optional[str],
+        typer.Option(
+            "--server-log-level",
+            help="MediaMTX log level: error, warn, info, debug (default: warn).",
+        ),
     ] = None,
     ffmpeg_log_level: Annotated[
         str, typer.Option("--ffmpeg-log-level", help="ffmpeg -loglevel value.")
@@ -367,9 +394,25 @@ def run(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the plan and exit without starting anything.")
     ] = False,
+    ntp_server: Annotated[
+        Optional[str],
+        typer.Option(
+            "--ntp-server",
+            help=(
+                "Sync the container clock to this NTP server before starting "
+                "(e.g. 192.168.198.151). Only valid inside a Docker container "
+                "with cap_add: [SYS_TIME]. Rejected on bare CLI / service deployments."
+            ),
+        ),
+    ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Debug logging.")] = False,
 ) -> None:
-    """Start the RTSP server and publish every camera. Runs until interrupted."""
+    """Start the RTSP server and publish every camera. Runs until interrupted.
+
+    With no --config/--source/--camera, the first of cameras.yaml, cameras.yml,
+    vcam.yaml or vcam.yml in the current directory is used. Per-camera options
+    below override the config for *every* camera in the stack.
+    """
     stack = _build_stack(config=config, source=source, name=name, cameras=camera)
 
     try:
@@ -381,6 +424,7 @@ def run(
             log_level=log_level,
             username=username,
             password=password,
+            ntp_server=ntp_server,
             mode=mode,
             loop=loop,
             realtime=realtime,
@@ -407,6 +451,8 @@ def run(
         return
 
     _setup_logging(verbose)
+
+    _run_ntp_sync(stack.server.ntp_server)
 
     try:
         binary = binaries.resolve_binary(
@@ -475,6 +521,57 @@ def _build_stack(
             raise _fail(f"invalid camera definition:\n{format_validation_error(exc)}")
 
     return _load_stack_or_exit(config)
+
+
+def _run_ntp_sync(ntp_server: Optional[str]) -> None:
+    """Query *ntp_server* and apply the measured offset. Container-only."""
+    if ntp_server is None:
+        return
+
+    logger = logging.getLogger("vcam")
+
+    if not running_in_container():
+        raise _fail(
+            f"--ntp-server ({ntp_server}) is only supported when running inside a Docker "
+            "container.\nApplying it on a bare CLI or systemd service would skew the host "
+            "system clock.\nRemove --ntp-server, or run vcam inside Docker with "
+            "cap_add: [SYS_TIME]."
+        )
+
+    console.print(f"[dim]NTP: querying {ntp_server} …[/]")
+    try:
+        offset, rtt = measure_offset(ntp_server)
+    except NTPError as exc:
+        raise _fail(f"NTP query to {ntp_server} failed: {exc}")
+
+    sign = "+" if offset >= 0 else ""
+    if not has_sys_time_cap():
+        console.print(
+            f"[yellow]NTP:[/] measured offset {sign}{offset * 1000:.3f} ms "
+            f"(RTT {rtt * 1000:.1f} ms) vs {ntp_server} — "
+            "[yellow]not applied[/] (CAP_SYS_TIME unavailable; "
+            "add [bold]cap_add: [SYS_TIME][/] to docker-compose.yml)"
+        )
+        return
+
+    try:
+        apply_offset(offset)
+    except OSError as exc:
+        raise _fail(f"Could not apply NTP offset: {exc}")
+
+    action = "stepped" if abs(offset) > 0.128 else "slewed"
+    logger.info(
+        "NTP sync to %s: offset %s%+.3f ms applied via %s (RTT %.1f ms)",
+        ntp_server,
+        sign,
+        offset * 1000,
+        action,
+        rtt * 1000,
+    )
+    console.print(
+        f"[green]NTP:[/] {sign}{offset * 1000:.3f} ms {action} "
+        f"(RTT {rtt * 1000:.1f} ms, server {ntp_server})"
+    )
 
 
 def _print_dry_run(stack: CameraStack, ffmpeg_log_level: str) -> None:
@@ -585,22 +682,58 @@ def add(
     name: Annotated[
         Optional[str], typer.Option("--name", "-n", help="Camera name (default: file stem).")
     ] = None,
-    mode: Annotated[StreamMode, typer.Option("--mode")] = StreamMode.AUTO,
+    mode: Annotated[
+        StreamMode,
+        typer.Option(
+            "--mode",
+            help="auto: copy when the source is H.264/HEVC, else transcode.",
+        ),
+    ] = StreamMode.AUTO,
     simulation: Annotated[
-        SimulationMode, typer.Option("--simulation", help="Fault to simulate on this camera.")
+        SimulationMode,
+        typer.Option(
+            "--simulation",
+            help="Simulate a camera fault: noise, degraded, frozen, blackout, flaky, stutter.",
+        ),
     ] = SimulationMode.NORMAL,
-    start_offset: Annotated[float, typer.Option("--start-offset")] = 0.0,
+    start_offset: Annotated[
+        float,
+        typer.Option("--start-offset", help="Seek N seconds into the file (de-syncs feeds)."),
+    ] = 0.0,
     port: Annotated[
-        Optional[int], typer.Option("--port", help="Dedicated RTSP port for this camera.")
+        Optional[int],
+        typer.Option(
+            "--port",
+            help="Dedicated RTSP port for this camera (spawns its own server instance).",
+        ),
     ] = None,
-    resolution: Annotated[Optional[str], typer.Option("--resolution")] = None,
-    fps: Annotated[Optional[float], typer.Option("--fps")] = None,
-    bitrate: Annotated[Optional[str], typer.Option("--bitrate")] = None,
-    codec: Annotated[Optional[VideoCodec], typer.Option("--codec")] = None,
-    encoder: Annotated[Optional[str], typer.Option("--encoder")] = None,
-    gop: Annotated[Optional[int], typer.Option("--gop")] = None,
+    resolution: Annotated[
+        Optional[str], typer.Option("--resolution", help="Transcode target, e.g. 1280x720.")
+    ] = None,
+    fps: Annotated[
+        Optional[float], typer.Option("--fps", help="Transcode target frame rate.")
+    ] = None,
+    bitrate: Annotated[
+        Optional[str], typer.Option("--bitrate", help="Transcode target bitrate, e.g. 2M.")
+    ] = None,
+    codec: Annotated[
+        Optional[VideoCodec], typer.Option("--codec", help="Transcode codec (default: h264).")
+    ] = None,
+    encoder: Annotated[
+        Optional[str],
+        typer.Option(
+            "--encoder", help="Explicit ffmpeg encoder, e.g. h264_nvenc (overrides --codec)."
+        ),
+    ] = None,
+    gop: Annotated[
+        Optional[int], typer.Option("--gop", help="Keyframe interval in frames when transcoding.")
+    ] = None,
 ) -> None:
-    """Append a camera to an existing configuration file."""
+    """Append a camera to an existing configuration file.
+
+    Only the most common per-camera settings are exposed here; edit the YAML
+    directly for the rest (audio, transport, realtime, preset, simulation timing).
+    """
     path = config or find_default_config()
     if path is None:
         raise _fail("no config file found. Create one with `vcam init`.")
@@ -634,7 +767,7 @@ def add(
 
 
 @app.command("list")
-def list_cameras(config: ConfigOption = None, host: HostOption = None) -> None:
+def list_cameras(config: ConfigOption = None, host: DisplayHostOption = None) -> None:
     """Show the cameras declared in a configuration file."""
     stack = _load_stack_or_exit(config)
     _print_camera_table(stack, host)
@@ -643,7 +776,7 @@ def list_cameras(config: ConfigOption = None, host: HostOption = None) -> None:
 @app.command()
 def urls(
     config: ConfigOption = None,
-    host: HostOption = None,
+    host: DisplayHostOption = None,
     all_cameras: Annotated[
         bool, typer.Option("--all", help="Include disabled cameras.")
     ] = False,
@@ -660,6 +793,58 @@ def show(config: ConfigOption = None) -> None:
     """Print the fully resolved configuration as YAML."""
     stack = _load_stack_or_exit(config)
     console.print(dump_stack(stack).rstrip())
+
+
+@app.command("clock-status")
+def clock_status(
+    ntp_server: Annotated[
+        Optional[str],
+        typer.Option(
+            "--ntp-server",
+            "-n",
+            help="NTP server to measure offset against (e.g. 192.168.198.151).",
+        ),
+    ] = None,
+) -> None:
+    """Show clock status and measure offset against an NTP server (read-only)."""
+    import time as _time
+
+    in_container = running_in_container()
+    has_cap = has_sys_time_cap()
+
+    console.print(f"System time  : {_time.strftime('%Y-%m-%dT%H:%M:%S', _time.gmtime())} UTC")
+    console.print(f"In container : {'[green]yes[/]' if in_container else '[yellow]no[/]'}")
+    console.print(f"CAP_SYS_TIME : {'[green]yes[/]' if has_cap else '[yellow]no[/]'}")
+
+    if ntp_server is None:
+        if not in_container:
+            console.print(
+                "\n[dim]Tip: pass --ntp-server <host> to measure offset. "
+                "NTP sync is only supported inside Docker containers.[/]"
+            )
+        return
+
+    console.print(f"NTP server   : {ntp_server}")
+    try:
+        offset, rtt = measure_offset(ntp_server)
+    except NTPError as exc:
+        console.print(f"[red]NTP error    : {exc}[/]")
+        raise typer.Exit(1)
+
+    sign = "+" if offset >= 0 else ""
+    console.print(f"Offset       : {sign}{offset * 1000:.3f} ms")
+    console.print(f"RTT          : {rtt * 1000:.3f} ms")
+
+    if not in_container:
+        console.print(
+            "\n[yellow]Note:[/] NTP sync ([bold]--ntp-server[/] on [bold]vcam run[/]) "
+            "is only supported inside a Docker container to avoid touching the host clock."
+        )
+    elif not has_cap:
+        console.print(
+            "\n[yellow]Note:[/] CAP_SYS_TIME is not set — offset is measured but cannot "
+            "be applied.\nAdd [bold]cap_add: [SYS_TIME][/] to docker-compose.yml."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -695,10 +880,15 @@ def probe(
 
 @app.command()
 def doctor(
-    mediamtx_binary: Annotated[Optional[Path], typer.Option("--mediamtx-binary")] = None,
-    mediamtx_version: Annotated[str, typer.Option("--mediamtx-version")] = binaries.DEFAULT_VERSION,
+    mediamtx_binary: Annotated[
+        Optional[Path], typer.Option("--mediamtx-binary", help="Check this MediaMTX binary.")
+    ] = None,
+    mediamtx_version: Annotated[
+        str,
+        typer.Option("--mediamtx-version", help="Release to look for in the local cache."),
+    ] = binaries.DEFAULT_VERSION,
 ) -> None:
-    """Check that ffmpeg, ffprobe and MediaMTX are available."""
+    """Check that ffmpeg, ffprobe and MediaMTX are available. Never downloads."""
     ok = True
 
     for tool in ("ffmpeg", "ffprobe"):
@@ -752,6 +942,105 @@ def install_server(
     except binaries.BinaryError as exc:
         raise _fail(str(exc))
     console.print(f"installed [bold]{path}[/]")
+
+
+# ---------------------------------------------------------------------------
+# service management (systemd user unit / launchd agent)
+# ---------------------------------------------------------------------------
+
+service_app = typer.Typer(
+    help=(
+        "Run vcam as a persistent background service.\n\n"
+        "Linux: a systemd user unit (no root needed).\n"
+        "macOS: a launchd LaunchAgent."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(service_app, name="service")
+
+_NameOption = Annotated[
+    str,
+    typer.Option("--name", "-n", help="Service / unit name (default: vcam)."),
+]
+
+
+@service_app.command()
+def install(
+    config: ConfigOption = None,
+    name: _NameOption = "vcam",
+) -> None:
+    """Install vcam as a background service and start it immediately.
+
+    Bakes the resolved config path into the unit so the service is
+    self-contained.  Put all camera settings in the YAML file; edit the unit
+    afterwards if you need extra CLI flags.
+    """
+    path = config or find_default_config()
+    if path is None:
+        raise _fail("no config file found; pass --config or create one with `vcam init`")
+    try:
+        load_stack(path)
+    except ConfigError as exc:
+        raise _fail(str(exc))
+    try:
+        summary = _service.install(name, Path(path).expanduser().resolve())
+    except ServiceError as exc:
+        raise _fail(str(exc))
+    console.print(f"[green]installed[/] {summary}")
+
+
+@service_app.command()
+def start(name: _NameOption = "vcam") -> None:
+    """Start a previously installed service."""
+    try:
+        summary = _service.start(name)
+    except ServiceError as exc:
+        raise _fail(str(exc))
+    console.print(f"[green]started[/] {summary}")
+
+
+@service_app.command()
+def stop(name: _NameOption = "vcam") -> None:
+    """Stop the running service (unit file is kept)."""
+    try:
+        summary = _service.stop(name)
+    except ServiceError as exc:
+        raise _fail(str(exc))
+    console.print(f"[yellow]stopped[/] {summary}")
+
+
+@service_app.command()
+def status(name: _NameOption = "vcam") -> None:
+    """Show whether the service is installed and running."""
+    try:
+        svc_status = _service.status(name)
+    except ServiceError as exc:
+        raise _fail(str(exc))
+    style = "green" if svc_status.active else ("yellow" if svc_status.installed else "red")
+    console.print(f"[{style}]{svc_status.line}[/]")
+    if not svc_status.active:
+        raise typer.Exit(3)
+
+
+@service_app.command()
+def uninstall(name: _NameOption = "vcam") -> None:
+    """Stop and remove the unit / plist file."""
+    try:
+        summary = _service.uninstall(name)
+    except ServiceError as exc:
+        raise _fail(str(exc))
+    console.print(f"[red]removed[/] {summary}")
+
+
+@service_app.command()
+def logs(name: _NameOption = "vcam") -> None:
+    """Stream the service log (journalctl on Linux, tail on macOS)."""
+    try:
+        _service.tail_logs(name)
+    except ServiceError as exc:
+        raise _fail(str(exc))
+    except KeyboardInterrupt:
+        pass
 
 
 def main() -> None:

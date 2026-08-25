@@ -260,7 +260,68 @@ ffmpeg -i source.mp4 -c:v libx264 -g 25 -keyint_min 25 -sc_threshold 0 -c:a copy
 
 or set `mode: transcode` on that camera, where the seek is frame accurate.
 
-## One port or many?
+## Clock synchronisation (RTCP NTP timestamps)
+
+Every RTCP Sender Report carries a wall-clock NTP timestamp, which is what the downstream pipeline (e.g. EAIS DeepStream) uses for clock-sync diagnostics.  That timestamp comes directly from the host system clock — there is no independent clock inside vcam.
+
+### RTCP clock chain
+
+```
+host OS clock  →  MediaMTX time.Now()  →  RTCP SR NTPTime  →  downstream client
+```
+
+### Syncing the container to an NTP server
+
+When running inside Docker, the container has its **own Linux kernel clock** (separate from the macOS host on Docker Desktop) that can be independently adjusted with `CAP_SYS_TIME`.
+
+```yaml
+# docker-compose.yml
+services:
+  vcam:
+    image: vcam:latest
+    cap_add:
+      - SYS_TIME     # grants adjtimex / clock_settime inside the container
+    command: run --ntp-server 192.168.198.151   # EAIS station IP
+```
+
+Or via the config file:
+
+```yaml
+server:
+  ntp_server: 192.168.198.151   # sync before start; container + SYS_TIME required
+```
+
+Before the RTSP server starts, vcam queries the NTP server (pure Python, no extra dependencies), measures the offset, and applies it:
+- **|offset| ≤ 128 ms** → gradual slew via `adjtimex(ADJ_SETOFFSET)` (no timestamp jump on live streams)
+- **|offset| > 128 ms** → instant step via `clock_settime`
+
+### Checking clock status
+
+```bash
+# Read-only — works anywhere, no privileges needed
+vcam clock-status --ntp-server 192.168.198.151
+# System time  : 2026-08-25T10:08:34 UTC
+# In container : yes
+# CAP_SYS_TIME : yes
+# NTP server   : 192.168.198.151
+# Offset       : +1.853 ms
+# RTT          : 0.812 ms
+```
+
+### Why NTP sync is container-only
+
+On a bare CLI or systemd service the system clock is shared with the rest of the machine.  Adjusting it would affect every other process, so `--ntp-server` is rejected outside a container.  Use the host's existing NTP daemon (chrony / timesyncd) if you need whole-system sync.
+
+### Testing clock skew impact
+
+| Scenario | Setup |
+|---|---|
+| Well-synced camera | `--ntp-server <eais-ip>` + `cap_add: [SYS_TIME]` |
+| Skewed camera | Disable NTP in the container (`timedatectl set-ntp false`) |
+| Fixed offset | `timedatectl set-time` inside the container after disabling NTP |
+| Free-running drift | Leave the container clock unsynced with no NTP daemon |
+
+
 
 Default is **one port, one path per camera**. It keeps firewall rules simple, needs a
 single server process, and matches how real NVRs expose channels.
@@ -300,6 +361,83 @@ uv run vcam install-server                     # pre-fetch into the cache
 uv run vcam run --no-download                  # never reach the network
 VCAM_CACHE_DIR=/opt/vcam uv run vcam install-server
 ```
+
+## Running as a service
+
+`vcam service` installs the stack as a long-running background service — no root required.
+
+| Platform | Backend | Unit file |
+|---|---|---|
+| Linux | systemd (user session) | `~/.config/systemd/user/vcam.service` |
+| macOS | launchd (LaunchAgent) | `~/Library/LaunchAgents/vcam.plist` |
+
+```bash
+# 1. Create a config if you don't have one yet
+vcam init -s videos/cam1.mp4
+
+# 2. Install and start immediately
+vcam service install                  # uses ./cameras.yaml by default
+vcam service install -c /abs/path/cameras.yaml   # explicit config
+
+# 3. Day-to-day operations
+vcam service status
+vcam service stop
+vcam service start
+vcam service logs                     # streams the log (Ctrl-C to exit)
+vcam service uninstall
+```
+
+The service runs `vcam run -c <absolute config>` and keeps it alive automatically
+(restarts after crashes).  Put all camera options — ports, modes, codecs — in the
+YAML file.
+
+### Linux notes
+
+The service runs under your **user systemd** session (`systemctl --user`), so it
+starts when you log in and stops when you log out.
+
+On headless servers (the EdgeAI Jetson, CI boxes) you usually want it to survive
+logout.  Enable lingering once:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+Logs are written to the systemd journal:
+
+```bash
+journalctl --user -u vcam.service -f
+```
+
+### macOS notes
+
+The LaunchAgent starts at login and is restarted automatically on crash.
+Logs land in `~/Library/Logs/vcam-vcam.log` (or `vcam-<name>.log` for a custom
+`--name`).
+
+If ffmpeg is installed via Homebrew (i.e., in `/opt/homebrew/bin`) you may need
+to install vcam with the same shell so that PATH is captured correctly:
+
+```bash
+vcam service install         # run from a shell where `which ffmpeg` returns a path
+```
+
+### Distribution notes
+
+The recommended install method is via [uv](https://docs.astral.sh/uv/) or
+[pipx](https://pipx.pypa.io/), both of which produce a standalone vcam executable
+that the service unit can reference by absolute path:
+
+```bash
+uv tool install .            # installs vcam into its own isolated env
+# or
+pipx install .
+
+vcam service install
+```
+
+A `.deb` package or Homebrew formula is optional and only worth adding if you need
+a system-wide `apt install` workflow (e.g., managed fleet deployment).
 
 ## Development
 
