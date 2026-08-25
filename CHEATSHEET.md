@@ -31,6 +31,8 @@ restarted automatically if it dies.
 | `vcam urls` | One URL per line — pipe into scripts |
 | `vcam run` | Start the servers and publishers (Ctrl-C stops) |
 | `vcam install-server` | Pre-fetch the MediaMTX binary into the cache |
+| `vcam clock-status` | Show clock state; measure NTP offset (read-only) |
+| `vcam service …` | Install / start / stop / status / logs for the background service |
 
 ## Use case 1 — one clip, one camera, right now
 
@@ -185,7 +187,7 @@ ffplay  -rtsp_transport tcp rtsp://127.0.0.1:8554/cam1
 
 | Flag | Effect |
 | --- | --- |
-| `-c, --config` | YAML file (default `./cameras.yaml`) |
+| `-c, --config` | YAML file (default `./cameras.yaml`, `.yml`, or `vcam.yaml`/`.yml`) |
 | `-s, --source` / `-n, --name` | single camera from one file |
 | `--camera name=file` | repeatable, multiple cameras inline |
 | `--host` / `--port` | bind address / shared RTSP port (default `8554`) |
@@ -195,6 +197,7 @@ ffplay  -rtsp_transport tcp rtsp://127.0.0.1:8554/cam1
 | `--transport tcp\|udp`, `--audio/--no-audio` | publishing details |
 | `--simulation`, `--noise-level`, `--simulation-interval/-duration` | fault injection |
 | `-u/--username`, `-P/--password` | reader auth |
+| `--ntp-server` | sync the clock before starting (Docker only) |
 
 CLI flags override the config file for **every** camera — handy for quick experiments:
 

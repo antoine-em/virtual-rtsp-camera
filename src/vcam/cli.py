@@ -400,8 +400,9 @@ def run(
             "--ntp-server",
             help=(
                 "Sync the container clock to this NTP server before starting "
-                "(e.g. 192.168.198.151). Only valid inside a Docker container "
-                "with cap_add: [SYS_TIME]. Rejected on bare CLI / service deployments."
+                "(e.g. 192.168.198.151). Docker only: rejected on bare CLI / "
+                "service deployments, and measured but not applied without "
+                "cap_add: [SYS_TIME]."
             ),
         ),
     ] = None,
@@ -801,8 +802,10 @@ def clock_status(
         Optional[str],
         typer.Option(
             "--ntp-server",
-            "-n",
-            help="NTP server to measure offset against (e.g. 192.168.198.151).",
+            help=(
+                "NTP server to measure the clock offset against "
+                "(e.g. 192.168.198.151). Read-only: never adjusts the clock."
+            ),
         ),
     ] = None,
 ) -> None:
@@ -960,7 +963,7 @@ app.add_typer(service_app, name="service")
 
 _NameOption = Annotated[
     str,
-    typer.Option("--name", "-n", help="Service / unit name (default: vcam)."),
+    typer.Option("--name", "-n", help="Service / unit name."),
 ]
 
 
@@ -969,7 +972,7 @@ def install(
     config: ConfigOption = None,
     name: _NameOption = "vcam",
 ) -> None:
-    """Install vcam as a background service and start it immediately.
+    """Install vcam as a background service, start it, and enable it at login.
 
     Bakes the resolved config path into the unit so the service is
     self-contained.  Put all camera settings in the YAML file; edit the unit
@@ -1011,7 +1014,10 @@ def stop(name: _NameOption = "vcam") -> None:
 
 @service_app.command()
 def status(name: _NameOption = "vcam") -> None:
-    """Show whether the service is installed and running."""
+    """Show whether the service is installed and running.
+
+    Exits 0 when the service is running, 3 when it is stopped or not installed.
+    """
     try:
         svc_status = _service.status(name)
     except ServiceError as exc:
@@ -1024,7 +1030,7 @@ def status(name: _NameOption = "vcam") -> None:
 
 @service_app.command()
 def uninstall(name: _NameOption = "vcam") -> None:
-    """Stop and remove the unit / plist file."""
+    """Stop, disable, and remove the unit / plist file."""
     try:
         summary = _service.uninstall(name)
     except ServiceError as exc:
