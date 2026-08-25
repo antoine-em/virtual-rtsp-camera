@@ -33,7 +33,31 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.3] - 2026-08-25
+
+### Added
+
+- Repository governance baseline for public collaboration with low maintainer
+  overhead:
+  - MIT `LICENSE`
+  - `CONTRIBUTING.md` with scope boundaries and issue-first policy
+  - `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1)
+  - GitHub issue templates for bug reports and feature requests
+  - pull request template with focused review checklist
+  - stale workflow to auto-manage inactive issues/PRs
+- README badges and a contribution policy summary to improve discoverability and
+  set contribution expectations on the landing page.
+
+---
+
 ## [0.1.2] - 2026-08-25
+
+### Added
+
+- Demo entrypoint for zero-config Docker usage:
+  `scripts/entrypoint.sh` now auto-generates a ready-to-run `cameras.yaml` from
+  mounted sample videos when no config is provided, so container users can start
+  streaming with minimal setup.
 
 ### Changed
 
