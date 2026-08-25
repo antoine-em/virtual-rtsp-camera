@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"   # e.g. v0.1.0, v1.2.3
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  # ── 1. Run the test suite first ────────────────────────────────────────────
+  test:
+    name: test (${{ matrix.os }} / py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.12"]   # spot-check on release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --python ${{ matrix.python-version }}
+
+      - name: Run tests
+        run: uv run --python ${{ matrix.python-version }} pytest
+
+  # ── 2. Build the wheel + sdist ─────────────────────────────────────────────
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build wheel and sdist
+        run: uv build
+
+      - name: Verify the wheel installs and the CLI is callable
+        run: |
+          pip install dist/*.whl --quiet
+          vcam --version
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # ── 3. Build & push multi-arch Docker image to Docker Hub ─────────────────
+  docker:
+    name: Docker build & push (amd64 + arm64)
+    runs-on: ubuntu-latest
+    needs: test
+    environment: dockerhub
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (for arm64 cross-build)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: konekuto/vcam
+          tags: |
+            # semver tag  →  konekuto/vcam:0.1.0
+            type=semver,pattern={{version}}
+            # major.minor →  konekuto/vcam:0.1
+            type=semver,pattern={{major}}.{{minor}}
+            # latest only on non-pre-release tags
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') && !contains(github.ref_name, 'rc') }}
+          labels: |
+            org.opencontainers.image.title=vcam
+            org.opencontainers.image.description=Virtual RTSP camera CLI — serve looping video files as multiplexed RTSP feeds
+            org.opencontainers.image.vendor=Konekuto
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 4. Create the GitHub Release ───────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build, docker]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for the commit log fallback
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          python3 - <<'EOF'
+          import os, re, sys
+
+          version = "${{ steps.version.outputs.version }}"
+          try:
+              text = open("CHANGELOG.md").read()
+          except FileNotFoundError:
+              print("::warning::CHANGELOG.md not found; falling back to commit log")
+              sys.exit(0)
+
+          # Match the block between ## [version] and the next ## heading (or EOF).
+          pattern = rf"(?m)^## \[{re.escape(version)}\].*?\n(.*?)(?=\n^## \[|\Z)"
+          m = re.search(pattern, text, re.DOTALL)
+          if not m:
+              print(f"::warning::No CHANGELOG entry for {version}; falling back to commit log")
+              sys.exit(0)
+
+          notes = m.group(1).strip()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write("notes<<RELEASE_NOTES_EOF\n")
+              fh.write(notes + "\n")
+              fh.write("RELEASE_NOTES_EOF\n")
+          EOF
+
+      - name: Build release notes from commit log (fallback)
+        id: notes_fallback
+        if: steps.notes.outputs.notes == ''
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+          NOTES=$(git log --pretty="format:- %s" "$RANGE")
+          {
+            echo "notes<<RELEASE_NOTES_EOF"
+            echo "$NOTES"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compose final release body
+        id: body
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          NOTES="${{ steps.notes.outputs.notes || steps.notes_fallback.outputs.notes }}"
+          {
+            echo "body<<BODY_EOF"
+            echo "## vcam $VERSION"
+            echo ""
+            echo "$NOTES"
+            echo ""
+            echo "---"
+            echo "**Install via pip / uv**"
+            echo '```bash'
+            echo "pipx install vcam==${VERSION}   # standalone CLI"
+            echo "uv tool install vcam==${VERSION}"
+            echo '```'
+            echo ""
+            echo "**Docker**"
+            echo '```bash'
+            echo "docker pull konekuto/vcam:${VERSION}"
+            echo "docker pull konekuto/vcam:latest  # amd64 + arm64"
+            echo '```'
+            echo "BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: vcam ${{ steps.version.outputs.version }}
+          body: ${{ steps.body.outputs.body }}
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
