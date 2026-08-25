@@ -1,0 +1,213 @@
+# vcam cheat sheet
+
+One-page map of what `vcam` is for and the commands that get you there.
+Full details live in [README.md](README.md).
+
+## The mental model
+
+```mermaid
+flowchart LR
+    V["video files<br/>videos/*.mp4"] --> C["cameras.yaml<br/>(or CLI flags)"]
+    C --> R["vcam run"]
+    R --> F["ffmpeg publisher<br/>per camera"]
+    F --> M["MediaMTX<br/>RTSP server"]
+    M --> U["rtsp://host:8554/cam1<br/>rtsp://host:8554/cam2"]
+    U --> D["DeepStream / Node-RED /<br/>VLC / ffprobe"]
+```
+
+One server process per **port**, one path per **camera**, one ffmpeg publisher per camera,
+restarted automatically if it dies.
+
+## Command map
+
+| Command | What it's for |
+| --- | --- |
+| `vcam doctor` | Check ffmpeg / ffprobe / MediaMTX before anything else |
+| `vcam probe FILE` | Inspect a clip; shows which mode `auto` would choose |
+| `vcam init [-s file …]` | Create `./cameras.yaml` |
+| `vcam add FILE -n cam2` | Append a camera to the config |
+| `vcam show` | Print the resolved config (after defaults + overrides) |
+| `vcam list` | Table of cameras + their URLs |
+| `vcam urls` | One URL per line — pipe into scripts |
+| `vcam run` | Start the servers and publishers (Ctrl-C stops) |
+| `vcam install-server` | Pre-fetch the MediaMTX binary into the cache |
+
+## Use case 1 — one clip, one camera, right now
+
+```bash
+uv run vcam run --source videos/cam1.mp4
+# -> rtsp://127.0.0.1:8554/cam1
+ffplay -rtsp_transport tcp rtsp://127.0.0.1:8554/cam1
+```
+
+## Use case 2 — several cameras on one port
+
+```bash
+uv run vcam run \
+  --camera cam1=videos/cam1.mp4 \
+  --camera cam2=videos/cam2.mp4 \
+  --camera cam3=videos/cam3.mp4
+```
+
+Beyond two or three cameras, switch to a config file:
+
+```bash
+uv run vcam init -s videos/cam1.mp4 -s videos/cam2.mp4
+uv run vcam add videos/cam3.mp4 -n entrance
+uv run vcam run          # picks up ./cameras.yaml automatically
+```
+
+## Use case 3 — de-sync feeds fed from the same clip
+
+Give each camera a `start_offset` so they aren't showing identical frames.
+
+```yaml
+cameras:
+  - { name: cam1, source: videos/loop.mp4, start_offset: 0 }
+  - { name: cam2, source: videos/loop.mp4, start_offset: 12 }
+  - { name: cam3, source: videos/loop.mp4, start_offset: 24, mode: transcode }
+```
+
+Caveat: in `copy` mode the seek snaps to the nearest keyframe (~10 s steps at the default
+GOP). Use `mode: transcode` for frame-accurate offsets, or re-encode with a short GOP.
+
+## Use case 4 — control the pixels on the wire
+
+| `--mode` | Behaviour | Use when |
+| --- | --- | --- |
+| `auto` *(default)* | copy if already H.264/HEVC, else transcode | you don't care |
+| `copy` | pure passthrough, near-zero CPU | many cameras on a small box |
+| `transcode` | apply resolution / fps / bitrate / codec / GOP | testing a specific profile |
+
+```bash
+# cheapest possible: many streams, no re-encode
+uv run vcam run -s videos/cam1.mp4 --mode copy
+
+# force a 720p15 2 Mbit/s H.264 feed whatever the source is
+uv run vcam run -s videos/cam1.mp4 \
+  --mode transcode --resolution 1280x720 --fps 15 --bitrate 2M --gop 30
+
+# hardware encode on Jetson / NVIDIA
+uv run vcam run -c cameras.yaml --mode transcode --encoder h264_nvenc
+```
+
+## Use case 5 — simulate a misbehaving camera
+
+`--simulation` (or `simulation:` per camera) injects faults so you can test how your
+pipeline reacts to bad hardware.
+
+| Mode | What the reader sees |
+| --- | --- |
+| `normal` | untouched feed |
+| `noise` | grainy image (`--noise-level 1..100`) |
+| `degraded` | starved bitrate (150k) + long GOP (300) — blocky, smeary video |
+| `frozen` | a stuck frame |
+| `blackout` | black image |
+| `flaky` | the stream drops and comes back, on a schedule |
+| `stutter` | recurring freezes / hiccups |
+
+```bash
+uv run vcam run -s videos/cam1.mp4 --simulation noise --noise-level 40
+uv run vcam run -s videos/cam1.mp4 --simulation flaky \
+  --simulation-interval 30 --simulation-duration 5
+```
+
+`flaky` and `stutter` are driven by the supervisor at run time; the others are baked into
+the encoder filter chain. Extra ffmpeg filters: `--simulation-filters 'gblur=sigma=2'`.
+
+## Use case 6 — emulate physically separate devices
+
+Default is one port, many paths. Give a camera its own `port:` only when you need a
+separate device (a second MediaMTX instance is spawned per port group).
+
+```yaml
+cameras:
+  - { name: cam1, source: videos/cam1.mp4 }            # :8554/cam1
+  - { name: cam3, source: videos/cam3.mp4, port: 8555 } # :8555/cam3
+```
+
+## Use case 7 — require credentials
+
+```bash
+uv run vcam run -s videos/cam1.mp4 --username reader --password s3cret
+# -> ******127.0.0.1:8554/cam1
+```
+
+Readers must authenticate; local publishers keep working without a password, and anonymous
+publishing is restricted to loopback. Without `auth`, everything is anonymous.
+
+## Use case 8 — run it in Docker (no local Python/ffmpeg)
+
+```bash
+docker build -t vcam:latest .
+
+docker run --rm -p 8554:8554 \
+  -v "$PWD/cameras.yaml:/vcam/cameras.yaml:ro" \
+  -v "$PWD/videos:/vcam/videos:ro" \
+  vcam:latest run
+
+# or
+docker compose up -d --build
+```
+
+Sample clips without a local ffmpeg:
+
+```bash
+docker run --rm -v "$PWD/videos:/vcam/videos" \
+  --entrypoint /opt/vcam/scripts/make-sample-videos.sh vcam:latest /vcam/videos
+```
+
+Multi-arch (aarch64 EdgeAI boxes):
+
+```bash
+docker buildx build --platform linux/arm64,linux/amd64 -t vcam:latest --push .
+```
+
+## Use case 9 — operate / debug a running stack
+
+```bash
+uv run vcam run --dry-run                            # print the plan, start nothing
+uv run vcam run -v                                   # debug logging
+uv run vcam run --health-file /tmp/vcam-health.json  # JSON snapshot every 5s
+uv run vcam run --work-dir .vcam                     # keep generated mediamtx.yml
+uv run vcam run --max-restarts 5                     # cap publisher restarts
+uv run vcam run --no-download                        # never touch the network
+```
+
+Read a stream back:
+
+```bash
+ffprobe -rtsp_transport tcp rtsp://127.0.0.1:8554/cam1
+ffplay  -rtsp_transport tcp rtsp://127.0.0.1:8554/cam1
+```
+
+## Flags you reach for most
+
+| Flag | Effect |
+| --- | --- |
+| `-c, --config` | YAML file (default `./cameras.yaml`) |
+| `-s, --source` / `-n, --name` | single camera from one file |
+| `--camera name=file` | repeatable, multiple cameras inline |
+| `--host` / `--port` | bind address / shared RTSP port (default `8554`) |
+| `--mode`, `--resolution`, `--fps`, `--bitrate`, `--codec`, `--encoder`, `--gop` | video shaping |
+| `--loop/--no-loop`, `--realtime/--no-realtime` | looping and real-time pacing |
+| `--start-offset` | seek N seconds in, to de-sync |
+| `--transport tcp\|udp`, `--audio/--no-audio` | publishing details |
+| `--simulation`, `--noise-level`, `--simulation-interval/-duration` | fault injection |
+| `-u/--username`, `-P/--password` | reader auth |
+
+CLI flags override the config file for **every** camera — handy for quick experiments:
+
+```bash
+uv run vcam run -c cameras.yaml --mode transcode --resolution 640x360 --fps 10
+```
+
+## Gotchas
+
+- `start_offset` applies **once at startup**; later loops replay from the file start, so the
+  phase shift is permanent (that's the point).
+- In `copy` mode seeks snap to keyframes — use `transcode` for precision.
+- `api_port` (default `9997`) is loopback-only; the Docker `HEALTHCHECK` probes it, so
+  adjust or drop the healthcheck if you change it.
+- MediaMTX resolution order: `--mediamtx-binary` → `$VCAM_MEDIAMTX_BIN` → `PATH` → cache →
+  download. `vcam doctor` tells you which one you'd get.

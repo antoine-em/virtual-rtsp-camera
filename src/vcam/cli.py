@@ -30,6 +30,8 @@ from .models import (
     AuthSpec,
     CameraSpec,
     CameraStack,
+    SimulationMode,
+    SimulationSpec,
     StreamMode,
     Transport,
     VideoCodec,
@@ -118,6 +120,26 @@ def _video_overrides(
     return overrides
 
 
+def _simulation_overrides(
+    simulation: Optional[SimulationMode],
+    noise_level: Optional[int],
+    interval: Optional[float],
+    duration: Optional[float],
+    filters: Optional[str],
+) -> dict[str, object]:
+    overrides: dict[str, object] = {}
+    for key, value in (
+        ("mode", simulation),
+        ("noise_level", noise_level),
+        ("interval", interval),
+        ("duration", duration),
+        ("filters", filters),
+    ):
+        if value is not None:
+            overrides[key] = value
+    return overrides
+
+
 def _parse_camera_argument(value: str) -> tuple[str, Path]:
     """Parse ``NAME=/path/to/file.mp4`` (or a bare path) into a camera tuple."""
     if "=" in value:
@@ -164,6 +186,7 @@ def _apply_overrides(
     transport: Optional[Transport],
     audio: Optional[bool],
     video: dict[str, object],
+    simulation: dict[str, object],
 ) -> None:
     """Apply CLI overrides in place; every override applies to all cameras."""
     server = stack.server
@@ -195,6 +218,12 @@ def _apply_overrides(
             camera.audio = audio
         if video:
             camera.video = camera.video.model_copy(update=video)
+        if simulation:
+            # Validated (unlike model_copy) so bad CLI values are reported
+            # through the same ValidationError path as the rest.
+            camera.simulation = SimulationSpec.model_validate(
+                camera.simulation.model_dump() | simulation
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +298,37 @@ def run(
     audio: Annotated[
         Optional[bool], typer.Option("--audio/--no-audio", help="Publish audio (off by default).")
     ] = None,
+    simulation: Annotated[
+        Optional[SimulationMode],
+        typer.Option(
+            "--simulation",
+            help="Simulate a camera fault: noise, degraded, frozen, blackout, flaky, stutter.",
+        ),
+    ] = None,
+    noise_level: Annotated[
+        Optional[int],
+        typer.Option("--noise-level", min=1, max=100, help="Noise amplitude for --simulation noise."),
+    ] = None,
+    simulation_interval: Annotated[
+        Optional[float],
+        typer.Option(
+            "--simulation-interval",
+            min=0.1,
+            help="Seconds between flaky/stutter events (default 30).",
+        ),
+    ] = None,
+    simulation_duration: Annotated[
+        Optional[float],
+        typer.Option(
+            "--simulation-duration",
+            min=0.1,
+            help="How long each flaky/stutter event lasts (default 5).",
+        ),
+    ] = None,
+    simulation_filters: Annotated[
+        Optional[str],
+        typer.Option("--simulation-filters", help="Extra ffmpeg filters, e.g. 'gblur=sigma=2'."),
+    ] = None,
     username: Annotated[
         Optional[str], typer.Option("--username", "-u", help="Require this user for readers.")
     ] = None,
@@ -328,6 +388,13 @@ def run(
             transport=transport,
             audio=audio,
             video=_video_overrides(resolution, fps, bitrate, codec, encoder, gop, preset),
+            simulation=_simulation_overrides(
+                simulation,
+                noise_level,
+                simulation_interval,
+                simulation_duration,
+                simulation_filters,
+            ),
         )
     except ValidationError as exc:
         raise _fail(f"invalid options:\n{format_validation_error(exc)}")
@@ -441,12 +508,14 @@ def _print_ready(stack: CameraStack, runtimes: list[CameraRuntime]) -> None:
     table.add_column("camera", style="bold cyan")
     table.add_column("url")
     table.add_column("mode")
+    table.add_column("sim")
     table.add_column("source", style="dim")
     for runtime in runtimes:
         table.add_row(
             runtime.camera.name,
             runtime.read_url_with_credentials,
             runtime.mode.value,
+            _simulation_label(runtime.camera),
             str(runtime.camera.source),
         )
     console.print(table)
@@ -455,11 +524,22 @@ def _print_ready(stack: CameraStack, runtimes: list[CameraRuntime]) -> None:
     console.print("[dim]press Ctrl-C to stop[/]")
 
 
+def _simulation_label(camera: CameraSpec) -> str:
+    """Short description of a camera's simulation for the CLI tables."""
+    sim = camera.simulation
+    if sim.mode is SimulationMode.NORMAL:
+        return "-" if not sim.filters else "filters"
+    if sim.is_temporal:
+        return f"{sim.mode.value} {sim.duration:g}s/{sim.interval:g}s"
+    return sim.mode.value
+
+
 def _print_camera_table(stack: CameraStack, host: Optional[str] = None) -> None:
     table = Table(title="Cameras", title_justify="left")
     table.add_column("camera", style="bold cyan")
     table.add_column("url")
     table.add_column("mode")
+    table.add_column("sim")
     table.add_column("loop")
     table.add_column("offset")
     table.add_column("source", style="dim")
@@ -468,6 +548,7 @@ def _print_camera_table(stack: CameraStack, host: Optional[str] = None) -> None:
             camera.name if camera.enabled else f"[strike]{camera.name}[/]",
             stack.read_url(camera, host),
             camera.mode.value,
+            _simulation_label(camera),
             "yes" if camera.loop else "no",
             f"{camera.start_offset:g}s",
             str(camera.source),
@@ -505,6 +586,9 @@ def add(
         Optional[str], typer.Option("--name", "-n", help="Camera name (default: file stem).")
     ] = None,
     mode: Annotated[StreamMode, typer.Option("--mode")] = StreamMode.AUTO,
+    simulation: Annotated[
+        SimulationMode, typer.Option("--simulation", help="Fault to simulate on this camera.")
+    ] = SimulationMode.NORMAL,
     start_offset: Annotated[float, typer.Option("--start-offset")] = 0.0,
     port: Annotated[
         Optional[int], typer.Option("--port", help="Dedicated RTSP port for this camera.")
@@ -538,6 +622,7 @@ def add(
                 start_offset=start_offset,
                 port=port,
                 video=VideoSettings(**overrides),  # type: ignore[arg-type]
+                simulation=SimulationSpec(mode=simulation),
             )
         )
         CameraStack.model_validate(stack.model_dump())

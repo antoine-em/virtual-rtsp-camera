@@ -36,6 +36,26 @@ class VideoCodec(str, Enum):
     H265 = "h265"
 
 
+class SimulationMode(str, Enum):
+    """Camera fault to simulate on top of the normal feed.
+
+    ``normal`` leaves the feed untouched. Every other mode but ``flaky`` is
+    expressed inside the publisher's ffmpeg filter graph; ``flaky`` is the one
+    fault that needs the stream itself to go away, so the supervisor drives it.
+    """
+
+    NORMAL = "normal"
+    NOISE = "noise"
+    DEGRADED = "degraded"
+    FROZEN = "frozen"
+    BLACKOUT = "blackout"
+    FLAKY = "flaky"
+    STUTTER = "stutter"
+
+#: Modes whose behaviour varies over time, driven by `interval` and `duration`.
+TEMPORAL_SIMULATION_MODES = frozenset({SimulationMode.FLAKY, SimulationMode.STUTTER})
+
+
 ENCODER_BY_CODEC = {
     VideoCodec.H264: "libx264",
     VideoCodec.H265: "libx265",
@@ -91,6 +111,36 @@ class VideoSettings(BaseModel):
         return int(match.group(1)), int(match.group(2))
 
 
+class SimulationSpec(BaseModel):
+    """Fault profile applied to one camera.
+
+    Defaults to a clean feed. The temporal modes (``flaky``, ``stutter``)
+    repeat an event every ``interval`` seconds, each lasting ``duration``
+    seconds.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: SimulationMode = SimulationMode.NORMAL
+    noise_level: int = Field(
+        default=30, ge=1, le=100, description="Noise amplitude for the `noise` mode"
+    )
+    interval: float = Field(
+        default=30.0, gt=0, description="Seconds between flaky/stutter events"
+    )
+    duration: float = Field(
+        default=5.0, gt=0, description="How long each flaky/stutter event lasts"
+    )
+    filters: Optional[str] = Field(
+        default=None,
+        description="Extra ffmpeg filters appended to the chain, e.g. 'gblur=sigma=2'",
+    )
+
+    @property
+    def is_temporal(self) -> bool:
+        return self.mode in TEMPORAL_SIMULATION_MODES
+
+
 class CameraSpec(BaseModel):
     """A single virtual camera fed by a video file."""
 
@@ -112,6 +162,7 @@ class CameraSpec(BaseModel):
         description="Override the RTSP port for this camera (spawns a dedicated server)",
     )
     video: VideoSettings = Field(default_factory=VideoSettings)
+    simulation: SimulationSpec = Field(default_factory=SimulationSpec)
 
     @field_validator("name")
     @classmethod

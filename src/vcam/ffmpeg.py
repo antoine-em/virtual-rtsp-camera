@@ -4,10 +4,23 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .models import RTSP_PASSTHROUGH_CODECS, CameraSpec, StreamMode
+from .models import RTSP_PASSTHROUGH_CODECS, CameraSpec, SimulationMode, StreamMode
 from .probe import MediaInfo
 
 SOFTWARE_ENCODERS = frozenset({"libx264", "libx265"})
+
+#: What `degraded` falls back to when the camera sets no bitrate/GOP of its own:
+#: a bandwidth-starved feed with visible blocking and rare keyframes.
+DEGRADED_BITRATE = "150k"
+DEGRADED_GOP = 300
+#: Noise is worst-case for an encoder — uncapped it pushes tens of Mbit/s per
+#: camera. Cap it at a plausible camera bitrate unless the camera sets its own.
+NOISE_BITRATE = "4M"
+#: Frame rate a `frozen` camera holds its picture at.
+FREEZE_FPS = 1
+#: Output rate used to refill the frames `stutter` drops, when neither the
+#: camera nor the probe says otherwise.
+DEFAULT_STUTTER_FPS = 25.0
 
 
 def resolve_mode(camera: CameraSpec, info: Optional[MediaInfo]) -> StreamMode:
@@ -25,8 +38,74 @@ def resolve_mode(camera: CameraSpec, info: Optional[MediaInfo]) -> StreamMode:
     return StreamMode.TRANSCODE
 
 
-def _needs_filters(camera: CameraSpec) -> bool:
-    return camera.video.resolution is not None or camera.video.fps is not None
+def _stutter_filters(camera: CameraSpec, info: Optional[MediaInfo]) -> list[str]:
+    """Freeze the picture for `duration` out of every `interval + duration`.
+
+    `select` drops the frames of the freeze window and `fps` refills the gap by
+    repeating the last frame, so the picture holds while the stream keeps
+    flowing at a constant rate. Doing it inside one filter graph — rather than
+    swapping publishers — matters: swapping tears the path's stream down and
+    leaves already-attached readers stalled for good.
+    """
+    sim = camera.simulation
+    period = sim.interval + sim.duration
+    rate = camera.video.fps or (info.fps if info is not None and info.fps else None)
+    rate = rate or DEFAULT_STUTTER_FPS
+    # Single quotes keep the expression's commas from splitting the graph.
+    return [
+        f"select='lt(mod(t,{_format_number(period)}),{_format_number(sim.interval)})'",
+        f"fps={_format_number(rate)}",
+    ]
+
+
+def simulation_filters(camera: CameraSpec, info: Optional[MediaInfo] = None) -> list[str]:
+    """ffmpeg filters contributed by the camera's simulation mode.
+
+    Extra user filters are appended last so they apply on top of the fault.
+    """
+    sim = camera.simulation
+    filters: list[str] = []
+
+    if sim.mode is SimulationMode.NOISE:
+        filters.append(f"noise=alls={sim.noise_level}:allf=t")
+    elif sim.mode is SimulationMode.BLACKOUT:
+        # lutyuv (not lut) so the filter is applied to luma/chroma whatever the
+        # decoded pixel format is: with RGB input the y/u/v names are plain
+        # aliases for c0/c1/c2 and would tint the picture instead of blanking it.
+        filters.append("lutyuv=y=0:u=128:v=128")
+    elif sim.mode is SimulationMode.FROZEN:
+        filters.append(f"fps={FREEZE_FPS}")
+    elif sim.mode is SimulationMode.STUTTER:
+        filters.extend(_stutter_filters(camera, info))
+
+    if sim.filters:
+        filters.append(sim.filters)
+    return filters
+
+
+def simulation_forces_transcode(
+    camera: CameraSpec, info: Optional[MediaInfo] = None
+) -> bool:
+    """Whether the simulation needs a decode/encode pass.
+
+    Filters rewrite the pixels and ``degraded`` rewrites the bitstream; neither
+    survives passthrough, so both override ``copy``.
+    """
+    if camera.simulation.mode is SimulationMode.DEGRADED:
+        return True
+    return bool(simulation_filters(camera, info))
+
+
+def effective_mode(camera: CameraSpec, info: Optional[MediaInfo]) -> StreamMode:
+    """The mode the publisher really runs, simulation included.
+
+    ``resolve_mode`` answers "what does this source need?"; this answers "what
+    will ffmpeg actually do?", which is what the CLI and health file report.
+    """
+    mode = resolve_mode(camera, info)
+    if mode is StreamMode.COPY and simulation_forces_transcode(camera, info):
+        return StreamMode.TRANSCODE
+    return mode
 
 
 def build_publish_command(
@@ -38,7 +117,7 @@ def build_publish_command(
     log_level: str = "warning",
 ) -> list[str]:
     """Return the full ffmpeg argv publishing *camera* to *target_url*."""
-    mode = resolve_mode(camera, info)
+    mode = effective_mode(camera, info)
 
     cmd: list[str] = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", log_level]
 
@@ -67,18 +146,20 @@ def build_publish_command(
     if mode is StreamMode.COPY:
         cmd += ["-c:v", "copy"]
     else:
-        if _needs_filters(camera):
-            cmd += ["-vf", _build_filters(camera)]
+        filters = _build_filters(camera, info)
+        if filters:
+            cmd += ["-vf", filters]
         encoder = camera.video.ffmpeg_encoder
         cmd += ["-c:v", encoder]
         if encoder in SOFTWARE_ENCODERS:
             cmd += ["-preset", camera.video.preset, "-tune", "zerolatency"]
-        if camera.video.bitrate:
-            bitrate = camera.video.bitrate
+        bitrate = _effective_bitrate(camera)
+        if bitrate:
             cmd += ["-b:v", bitrate, "-maxrate", bitrate, "-bufsize", _double_bitrate(bitrate)]
-        if camera.video.gop:
-            gop = str(camera.video.gop)
-            cmd += ["-g", gop, "-keyint_min", gop, "-sc_threshold", "0"]
+        gop = _effective_gop(camera)
+        if gop:
+            gop_value = str(gop)
+            cmd += ["-g", gop_value, "-keyint_min", gop_value, "-sc_threshold", "0"]
         cmd += ["-pix_fmt", "yuv420p"]
 
     # --- audio ----------------------------------------------------------------
@@ -92,14 +173,39 @@ def build_publish_command(
     return cmd
 
 
-def _build_filters(camera: CameraSpec) -> str:
+def _build_filters(camera: CameraSpec, info: Optional[MediaInfo] = None) -> str:
     filters: list[str] = []
     size = camera.video.scale_size()
     if size is not None:
         filters.append(f"scale={size[0]}:{size[1]}")
     if camera.video.fps is not None:
         filters.append(f"fps={_format_number(camera.video.fps)}")
+    filters.extend(simulation_filters(camera, info))
     return ",".join(filters)
+
+
+def _effective_bitrate(camera: CameraSpec) -> Optional[str]:
+    """Explicit bitrate wins; a simulation only fills in a sane default."""
+    if camera.video.bitrate:
+        return camera.video.bitrate
+    if camera.simulation.mode is SimulationMode.DEGRADED:
+        return DEGRADED_BITRATE
+    if camera.simulation.mode is SimulationMode.NOISE:
+        return NOISE_BITRATE
+    return None
+
+
+def _effective_gop(camera: CameraSpec) -> Optional[int]:
+    if camera.video.gop:
+        return camera.video.gop
+    if camera.simulation.mode is SimulationMode.FROZEN:
+        # At 1 fps the encoder's default GOP would put minutes between
+        # keyframes, so a reader would stare at nothing before its first
+        # picture. A static frame costs almost nothing to send as a keyframe.
+        return FREEZE_FPS
+    if camera.simulation.mode is SimulationMode.DEGRADED:
+        return DEGRADED_GOP
+    return None
 
 
 def _double_bitrate(bitrate: str) -> str:

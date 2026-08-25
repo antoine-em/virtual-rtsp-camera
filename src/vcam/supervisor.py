@@ -16,9 +16,15 @@ from typing import Any, Callable, Optional
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from .ffmpeg import build_publish_command, resolve_mode
+from .ffmpeg import build_publish_command, effective_mode
 from .mediamtx import ServerInstance, plan_instances, write_server_config
-from .models import CameraSpec, CameraStack, StreamMode
+from .models import (
+    CameraSpec,
+    CameraStack,
+    SimulationMode,
+    SimulationSpec,
+    StreamMode,
+)
 from .probe import MediaInfo, try_probe
 
 logger = logging.getLogger("vcam")
@@ -42,6 +48,9 @@ class ManagedProcess:
     last_exit_code: Optional[int] = None
     retry_at: float = 0.0
     gave_up: bool = False
+    suspended: bool = False
+    """When set, the monitor leaves this process alone: a simulation scheduler
+    owns its stop/start cycle, so stops are planned rather than failures."""
     _reader: Optional[threading.Thread] = field(default=None, repr=False)
 
     @property
@@ -53,6 +62,8 @@ class ManagedProcess:
         return self.process.pid if self.process is not None else None
 
     def start(self) -> bool:
+        if self.running:
+            return True  # already up (e.g. the monitor restarted it first)
         logger.debug("%s: %s", self.name, " ".join(self.command))
         try:
             self.process = subprocess.Popen(
@@ -90,10 +101,15 @@ class ManagedProcess:
     def backoff(self) -> float:
         return min(BACKOFF_BASE * (2 ** max(self.consecutive_failures - 1, 0)), BACKOFF_MAX)
 
-    def note_exit(self, code: int) -> None:
+    def note_exit(self, code: int, *, planned: bool = False) -> None:
         uptime = time.monotonic() - self.started_at if self.started_at else 0.0
         self.last_exit_code = code
         self.process = None
+        if planned:
+            # A scheduled simulation stop is not a failure: it must not feed the
+            # restart backoff, nor burn part of the --max-restarts budget.
+            self.consecutive_failures = 0
+            return
         if uptime >= STABLE_RUNTIME:
             self.consecutive_failures = 1
         else:
@@ -128,10 +144,61 @@ class CameraRuntime:
     read_url_with_credentials: str
     """URL a reader can use directly; carries credentials when auth is enabled."""
     process: ManagedProcess
+    scheduler: Optional["SimulationScheduler"] = None
+    """Drives the dropout cycle of a flaky camera, None otherwise."""
 
 
 class SupervisorError(RuntimeError):
     """Raised when the supervisor cannot start."""
+
+
+class SimulationScheduler:
+    """Takes a `flaky` camera's publisher down and back up on a cycle.
+
+    The publisher is flagged ``suspended`` for the duration, which keeps the
+    monitor's crash-restart logic out of the scheduled cycle: a planned stop
+    counts neither against the restart backoff nor the restart budget.
+
+    Only ``flaky`` needs this. The other modes, ``stutter`` included, are
+    expressed inside a single ffmpeg filter graph — swapping publishers mid-run
+    tears the path's stream down and leaves attached readers stalled for good.
+    """
+
+    def __init__(self, runtime: "CameraRuntime", spec: "SimulationSpec", now: float) -> None:
+        self.runtime = runtime
+        self.spec = spec
+        self.state = "up"  # "up" | "event"
+        self._next_event = now + spec.interval
+
+    @property
+    def state_label(self) -> str:
+        return "up" if self.state == "up" else "down"
+
+    def tick(self, now: float) -> None:
+        if now < self._next_event:
+            return
+        if self.state == "up":
+            self._begin(now)
+        else:
+            self._end(now)
+
+    def _begin(self, now: float) -> None:
+        logger.info(
+            "%s: [simulation] dropping the stream for %gs",
+            self.runtime.camera.name,
+            self.spec.duration,
+        )
+        self.runtime.process.suspended = True
+        self.runtime.process.stop()
+        self.state = "event"
+        self._next_event = now + self.spec.duration
+
+    def _end(self, now: float) -> None:
+        logger.info("%s: [simulation] stream restored", self.runtime.camera.name)
+        self.runtime.process.suspended = False
+        self.runtime.process.start()
+        self.state = "up"
+        self._next_event = now + self.spec.interval
 
 
 class Supervisor:
@@ -212,7 +279,7 @@ class Supervisor:
         for instance in self.instances:
             for camera in instance.cameras:
                 info = try_probe(camera.source, ffprobe=self.ffprobe)
-                mode = resolve_mode(camera, info)
+                mode = effective_mode(camera, info)
                 command = build_publish_command(
                     camera,
                     self.stack.publish_url(camera),
@@ -220,19 +287,22 @@ class Supervisor:
                     ffmpeg=self.ffmpeg,
                     log_level=self.ffmpeg_log_level,
                 )
-                self.runtimes.append(
-                    CameraRuntime(
-                        camera=camera,
-                        instance=instance,
-                        mode=mode,
-                        info=info,
-                        read_url=self.stack.read_url(camera, with_credentials=False),
-                        read_url_with_credentials=self.stack.read_url(camera),
-                        process=ManagedProcess(
-                            name=camera.name, kind="publisher", command=command
-                        ),
-                    )
+                runtime = CameraRuntime(
+                    camera=camera,
+                    instance=instance,
+                    mode=mode,
+                    info=info,
+                    read_url=self.stack.read_url(camera, with_credentials=False),
+                    read_url_with_credentials=self.stack.read_url(camera),
+                    process=ManagedProcess(
+                        name=camera.name, kind="publisher", command=command
+                    ),
                 )
+                if camera.simulation.mode is SimulationMode.FLAKY:
+                    runtime.scheduler = SimulationScheduler(
+                        runtime, camera.simulation, time.monotonic()
+                    )
+                self.runtimes.append(runtime)
 
     def run(self) -> int:
         """Start everything and block until interrupted. Returns an exit code."""
@@ -274,9 +344,16 @@ class Supervisor:
                     continue
                 if process.process is not None:
                     code = process.process.poll()
-                    level = logger.info if self._stop.is_set() else logger.warning
-                    level("%s: exited with code %s", process.name, code)
-                    process.note_exit(code)
+                    if process.suspended:
+                        logger.info("%s: stopped (simulation)", process.name)
+                        process.note_exit(code, planned=True)
+                    else:
+                        level = logger.info if self._stop.is_set() else logger.warning
+                        level("%s: exited with code %s", process.name, code)
+                        process.note_exit(code)
+                    continue
+                if process.suspended:
+                    # The simulation scheduler owns this stop/start cycle.
                     continue
                 if now < process.retry_at:
                     continue
@@ -295,6 +372,10 @@ class Supervisor:
                 process.restarts += 1
                 logger.info("%s: restart #%s", process.name, process.restarts)
                 process.start()
+
+            for runtime in self.runtimes:
+                if runtime.scheduler is not None:
+                    runtime.scheduler.tick(now)
 
             if self.health_file is not None and now - last_health >= health_interval:
                 self._write_health()
@@ -359,6 +440,12 @@ class Supervisor:
                     "pid": runtime.process.pid,
                     "restarts": runtime.process.restarts,
                     "last_exit_code": runtime.process.last_exit_code,
+                    "simulation": runtime.camera.simulation.mode.value,
+                    **(
+                        {"simulation_state": runtime.scheduler.state_label}
+                        if runtime.scheduler is not None
+                        else {}
+                    ),
                 }
                 for runtime in self.runtimes
             ],
