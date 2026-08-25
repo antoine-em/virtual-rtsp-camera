@@ -33,6 +33,21 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.2] - 2026-08-25
+
+### Changed
+
+- Bump GitHub Actions to current majors via Dependabot (#5):
+  `actions/checkout` v4 -> v7, `actions/upload-artifact` v4 -> v7,
+  `actions/download-artifact` v4 -> v8, `astral-sh/setup-uv` v5 -> v7,
+  `docker/setup-qemu-action` v3 -> v4, `docker/setup-buildx-action` v3 -> v4,
+  `docker/login-action` v3 -> v4, `docker/build-push-action` v6 -> v7,
+  `docker/metadata-action` v5 -> v6, `softprops/action-gh-release` v2 -> v3.
+- Bump `typer` 0.27.0 -> 0.27.1 via Dependabot (#3). This also raised the
+  declared floor from `typer>=0.12` to `typer>=0.27.1`.
+
+---
+
 ## [0.1.1] - 2026-08-25
 
 ### Security
@@ -113,6 +128,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
 <!-- version diff links ────────────────────────────────────────────────────── -->
-[Unreleased]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/antoine-em/virtual-rtsp-camera/releases/tag/v0.1.0
