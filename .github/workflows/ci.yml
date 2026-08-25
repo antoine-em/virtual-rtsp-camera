@@ -101,10 +101,11 @@ jobs:
       # Fails only on vulnerabilities that have a fixed package available, so
       # unfixable base-image CVEs don't permanently block the pipeline.
       - name: Scan image for fixable CRITICAL/HIGH vulnerabilities
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: vcam:ci
           format: table
+          scanners: vuln
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"

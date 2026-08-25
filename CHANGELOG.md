@@ -66,10 +66,20 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CI now fails on *fixable* CRITICAL/HIGH image vulnerabilities via Trivy.
   Unfixable findings are ignored so the pipeline is not permanently blocked.
 - Publish wheel to GitHub Packages (PyPI registry) on every release.
+  (Removed later in this same release — see Fixed.)
 - Push `konekuto/vcam:main` to Docker Hub on every merge to `main`.
 
 ### Fixed
 
+- CI: pinned the Trivy scan step to `aquasecurity/trivy-action@v0.36.0`; the
+  previously referenced `@0.28.0` was missing the `v` prefix and could not be
+  resolved, failing every Docker build job.
+- CI release pipeline: removed the "Publish to GitHub Packages" job. GitHub
+  Packages has no PyPI registry (only npm, RubyGems, Maven, Gradle, Docker and
+  NuGet), so `https://pypi.pkg.github.com/...` always returned 404. Because
+  `release` declared `needs: [build, publish, docker]`, that failure skipped
+  the "Create GitHub Release" job and blocked every release. The wheel and
+  sdist are still attached to the GitHub Release as assets.
 - CI release pipeline: fixed duplicate workflow content causing YAML parse error.
 - CI release pipeline: release body now written via Python to avoid shell
   interpolation of backtick-quoted text in CHANGELOG entries.
