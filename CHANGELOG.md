@@ -33,6 +33,23 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.1] - 2026-08-25
+
+### Fixed
+
+- CI release pipeline: fixed duplicate workflow content causing YAML parse error.
+- CI release pipeline: release body now written via Python to avoid shell
+  interpolation of backtick-quoted text in CHANGELOG entries.
+- CI: Docker Hub push jobs now reference the `dockerhub` environment so
+  `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets are correctly injected.
+
+### Added
+
+- Publish wheel to GitHub Packages (PyPI registry) on every release.
+- Push `konekuto/vcam:main` to Docker Hub on every merge to `main`.
+
+---
+
 ## [0.1.0] - 2025-08-25
 
 ### Added
@@ -57,5 +74,6 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
 <!-- version diff links ────────────────────────────────────────────────────── -->
-[Unreleased]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/antoine-em/virtual-rtsp-camera/releases/tag/v0.1.0
