@@ -142,82 +142,69 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Extract release notes from CHANGELOG.md
-        id: notes
-        run: |
-          python3 - <<'EOF'
-          import os, re, sys
-
-          version = "${{ steps.version.outputs.version }}"
-          try:
-              text = open("CHANGELOG.md").read()
-          except FileNotFoundError:
-              print("::warning::CHANGELOG.md not found; falling back to commit log")
-              sys.exit(0)
-
-          # Match the block between ## [version] and the next ## heading (or EOF).
-          pattern = rf"(?m)^## \[{re.escape(version)}\].*?\n(.*?)(?=\n^## \[|\Z)"
-          m = re.search(pattern, text, re.DOTALL)
-          if not m:
-              print(f"::warning::No CHANGELOG entry for {version}; falling back to commit log")
-              sys.exit(0)
-
-          notes = m.group(1).strip()
-          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-              fh.write("notes<<RELEASE_NOTES_EOF\n")
-              fh.write(notes + "\n")
-              fh.write("RELEASE_NOTES_EOF\n")
-          EOF
-
-      - name: Build release notes from commit log (fallback)
-        id: notes_fallback
-        if: steps.notes.outputs.notes == ''
-        run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            RANGE="${PREV_TAG}..HEAD"
-          else
-            RANGE="HEAD"
-          fi
-          NOTES=$(git log --pretty="format:- %s" "$RANGE")
-          {
-            echo "notes<<RELEASE_NOTES_EOF"
-            echo "$NOTES"
-            echo "RELEASE_NOTES_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Compose final release body
+      - name: Compose release body
         id: body
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          NOTES="${{ steps.notes.outputs.notes || steps.notes_fallback.outputs.notes }}"
-          {
-            echo "body<<BODY_EOF"
-            echo "## vcam $VERSION"
-            echo ""
-            echo "$NOTES"
-            echo ""
-            echo "---"
-            echo "**Install via pip / uv**"
-            echo '```bash'
-            echo "pipx install vcam==${VERSION}   # standalone CLI"
-            echo "uv tool install vcam==${VERSION}"
-            echo '```'
-            echo ""
-            echo "**Docker**"
-            echo '```bash'
-            echo "docker pull konekuto/vcam:${VERSION}"
-            echo "docker pull konekuto/vcam:latest  # amd64 + arm64"
-            echo '```'
-            echo "BODY_EOF"
-          } >> "$GITHUB_OUTPUT"
+          python3 - <<'PYEOF'
+          import os, re, subprocess, textwrap
+
+          version = "${{ steps.version.outputs.version }}"
+
+          # Try CHANGELOG first
+          notes = ""
+          try:
+              text = open("CHANGELOG.md").read()
+              pattern = rf"(?m)^## \[{re.escape(version)}\].*?\n(.*?)(?=\n^## \[|\Z)"
+              m = re.search(pattern, text, re.DOTALL)
+              if m:
+                  notes = m.group(1).strip()
+              else:
+                  print(f"::warning::No CHANGELOG entry for {version}; using commit log")
+          except FileNotFoundError:
+              print("::warning::CHANGELOG.md not found; using commit log")
+
+          # Fallback: git log
+          if not notes:
+              try:
+                  prev = subprocess.check_output(
+                      ["git", "describe", "--tags", "--abbrev=0", "HEAD^"],
+                      stderr=subprocess.DEVNULL, text=True).strip()
+                  log_range = f"{prev}..HEAD"
+              except subprocess.CalledProcessError:
+                  log_range = "HEAD"
+              notes = subprocess.check_output(
+                  ["git", "log", "--pretty=format:- %s", log_range], text=True).strip()
+
+          lines = [
+              f"## vcam {version}",
+              "",
+              notes,
+              "",
+              "---",
+              "**Install via pip / uv**",
+              "```bash",
+              f"pipx install vcam=={version}   # standalone CLI",
+              f"uv tool install vcam=={version}",
+              "```",
+              "",
+              "**Docker**",
+              "```bash",
+              f"docker pull konekuto/vcam:{version}",
+              "docker pull konekuto/vcam:latest  # amd64 + arm64",
+              "```",
+          ]
+          body = "\n".join(lines)
+
+          with open("release_body.md", "w") as f:
+              f.write(body)
+          PYEOF
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: vcam ${{ steps.version.outputs.version }}
-          body: ${{ steps.body.outputs.body }}
+          body_path: release_body.md
           files: |
             dist/*.whl
             dist/*.tar.gz
