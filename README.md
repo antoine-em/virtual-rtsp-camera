@@ -1,5 +1,11 @@
 # virtual-rtsp-camera
 
+![CI](https://img.shields.io/github/actions/workflow/status/antoine-em/virtual-rtsp-camera/ci.yml?branch=main&label=build)
+![Release](https://img.shields.io/github/v/release/antoine-em/virtual-rtsp-camera)
+![License](https://img.shields.io/github/license/antoine-em/virtual-rtsp-camera)
+![Last Commit](https://img.shields.io/github/last-commit/antoine-em/virtual-rtsp-camera)
+![Issues](https://img.shields.io/github/issues/antoine-em/virtual-rtsp-camera)
+
 `vcam` — a command line tool that turns local video files into **looping virtual RTSP
 cameras**, so video analytics pipelines (such as DeepStream) can be developed and
 tested without physical cameras.
@@ -445,6 +451,17 @@ a system-wide `apt install` workflow (e.g., managed fleet deployment).
 uv sync
 uv run pytest
 ```
+
+## Contributing and project scope
+
+Contributions are welcome, but this repository is intentionally maintained with a narrow scope to keep it sustainable.
+
+- For non-trivial changes, open an issue first and wait for maintainer feedback.
+- PRs should be focused, with tests/docs updated when behavior changes.
+- Features outside the roadmap may be deferred or declined.
+- Inactive issues/PRs may be marked stale and automatically closed.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for full details.
 
 ## aarch64 deployment
 
