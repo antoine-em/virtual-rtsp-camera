@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible problem in virtual-rtsp-camera
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please provide enough detail to reproduce it.
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, install method, and whether you use Docker
+      placeholder: "Ubuntu 24.04, Python 3.11, uv tool install, Docker no"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and config
+      description: Exact command, config file, and sample inputs (redact secrets)
+      placeholder: "vcam run -c cameras.yaml ..."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run ...
+        2. Connect with ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and traces
+      description: Paste relevant logs/errors from vcam, ffmpeg, or client output
+      render: shell
