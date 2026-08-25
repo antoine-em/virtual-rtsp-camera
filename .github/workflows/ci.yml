@@ -64,6 +64,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          pull: true
           tags: konekuto/vcam:main
           labels: |
             org.opencontainers.image.title=vcam
@@ -88,6 +89,7 @@ jobs:
         with:
           context: .
           push: false
+          pull: true
           load: true
           tags: vcam:ci
           cache-from: type=gha
@@ -95,3 +97,14 @@ jobs:
 
       - name: Smoke-test the image
         run: docker run --rm vcam:ci --version
+
+      # Fails only on vulnerabilities that have a fixed package available, so
+      # unfixable base-image CVEs don't permanently block the pipeline.
+      - name: Scan image for fixable CRITICAL/HIGH vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: vcam:ci
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

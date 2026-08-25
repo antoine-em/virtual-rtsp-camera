@@ -15,7 +15,7 @@ from typing import Callable, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
-DEFAULT_VERSION = "v1.19.3"
+DEFAULT_VERSION = "v1.20.1"
 RELEASE_BASE = "https://github.com/bluenviron/mediamtx/releases/download"
 ENV_BINARY = "VCAM_MEDIAMTX_BIN"
 ENV_CACHE = "VCAM_CACHE_DIR"

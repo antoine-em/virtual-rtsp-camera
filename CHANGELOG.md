@@ -35,6 +35,39 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.1.1] - 2026-08-25
 
+### Security
+
+- Bump the bundled MediaMTX from `v1.19.3` to `v1.20.1`. The v1.19.3 binary was
+  built with Go 1.26.5 and carried 9 fixable HIGH advisories in the Go standard
+  library (CVE-2026-39821, -33818, -46600, -56853, -56858, -56859, -56860,
+  -56862) plus CVE-2026-71556 in `go-git`; v1.20.1 is built with Go 1.26.6.
+- Runtime image: `apt-get upgrade` during build so `trixie-security` updates
+  published after the base image was cut are picked up.
+- Runtime image: remove `perl-base`. Nothing in the image needs it (ffmpeg and
+  CPython both verified working without it) and it shipped CVE-2026-12087,
+  -13221 and -48959, none of which have a fixed package in Debian trixie.
+- Runtime image: uninstall `pip` after the wheel is installed. It is unused at
+  runtime and carried 7 known advisories.
+- CI: Docker builds now run with `pull: true` so a cached stale base image
+  cannot silently reintroduce patched vulnerabilities.
+
+  Net effect: fixable CRITICAL/HIGH findings in the published image drop from
+  9 to 0.
+
+  Known accepted risk: `libcjson1` CVE-2026-67215 / -29036 / -67216 remain.
+  The package is a hard dependency of `librist4`, which Debian's (and Alpine's)
+  `ffmpeg` is linked against, so it cannot be removed without a custom ffmpeg
+  build. No fixed version is available upstream.
+
+### Added
+
+- `.github/dependabot.yml` — weekly update checks for uv, Docker and GitHub
+  Actions dependencies.
+- CI now fails on *fixable* CRITICAL/HIGH image vulnerabilities via Trivy.
+  Unfixable findings are ignored so the pipeline is not permanently blocked.
+- Publish wheel to GitHub Packages (PyPI registry) on every release.
+- Push `konekuto/vcam:main` to Docker Hub on every merge to `main`.
+
 ### Fixed
 
 - CI release pipeline: fixed duplicate workflow content causing YAML parse error.
@@ -43,10 +76,6 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CI: Docker Hub push jobs now reference the `dockerhub` environment so
   `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets are correctly injected.
 
-### Added
-
-- Publish wheel to GitHub Packages (PyPI registry) on every release.
-- Push `konekuto/vcam:main` to Docker Hub on every merge to `main`.
 
 ---
 

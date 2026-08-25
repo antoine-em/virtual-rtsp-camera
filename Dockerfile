@@ -38,15 +38,26 @@ FROM python:${PYTHON_VERSION}-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# `apt-get upgrade` picks up trixie-security updates published after the base
+# image was cut. perl-base is then dropped: nothing in this image needs it
+# (ffmpeg and CPython both run fine without it) and it carries CVEs that have
+# no fixed package in Debian trixie.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home vcam
+    && useradd --create-home vcam \
+    && apt-get remove -y --allow-remove-essential perl-base \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /vcam
 
+# pip is only needed to install the wheel; dropping it from the runtime image
+# removes a package that regularly carries advisories and is never used here.
 COPY --from=build /out/vcam-*.whl /tmp/wheel/
-RUN pip install --no-cache-dir /tmp/wheel/vcam-*.whl && rm -rf /tmp/wheel
+RUN pip install --no-cache-dir /tmp/wheel/vcam-*.whl \
+    && rm -rf /tmp/wheel \
+    && pip uninstall -y pip
 
 # Helper to generate throwaway sample clips inside the image.
 COPY scripts/make-sample-videos.sh /opt/vcam/scripts/make-sample-videos.sh
