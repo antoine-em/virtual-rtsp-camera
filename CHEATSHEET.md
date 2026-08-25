@@ -24,7 +24,8 @@ restarted automatically if it dies.
 | --- | --- |
 | `vcam doctor` | Check ffmpeg / ffprobe / MediaMTX before anything else |
 | `vcam probe FILE` | Inspect a clip; shows which mode `auto` would choose |
-| `vcam init [-s file …]` | Create `./cameras.yaml` |
+| `vcam generate [-d dir]` | **Interactive wizard** — scan a folder, answer prompts, write `cameras.yaml` |
+| `vcam init [-s file …]` | Create `./cameras.yaml` from a template |
 | `vcam add FILE -n cam2` | Append a camera to the config |
 | `vcam show` | Print the resolved config (after defaults + overrides) |
 | `vcam list` | Table of cameras + their URLs |
@@ -51,7 +52,15 @@ uv run vcam run \
   --camera cam3=videos/cam3.mp4
 ```
 
-Beyond two or three cameras, switch to a config file:
+Beyond two or three cameras, switch to a config file.
+The fastest way is the interactive wizard:
+
+```bash
+uv run vcam generate -d videos/  # scan the videos/ folder, answer prompts
+uv run vcam run                  # picks up ./cameras.yaml automatically
+```
+
+Or build it incrementally:
 
 ```bash
 uv run vcam init -s videos/cam1.mp4 -s videos/cam2.mp4

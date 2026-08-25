@@ -29,8 +29,13 @@ from .ffmpeg import build_publish_command, resolve_mode
 from .mediamtx import plan_instances, render_server_config_yaml
 from .models import (
     AuthSpec,
+    CAMERA_NAME_RE,
     CameraSpec,
     CameraStack,
+    CREDENTIAL_CHARS,
+    CREDENTIAL_RE,
+    RTSP_PASSTHROUGH_CODECS,
+    ServerSpec,
     SimulationMode,
     SimulationSpec,
     StreamMode,
@@ -678,6 +683,162 @@ def init(
     stack = example_stack([Path(item).expanduser() for item in source] if source else None)
     save_stack(stack, path)
     console.print(f"wrote [bold]{path}[/]")
+
+
+@app.command()
+def generate(
+    path: Annotated[Path, typer.Argument(help="Config file to create.")] = Path("cameras.yaml"),
+    scan: Annotated[
+        Optional[Path],
+        typer.Option("--scan", "-d", help="Directory to scan for video files (default: cwd)."),
+    ] = None,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
+) -> None:
+    """Interactive wizard that generates a cameras.yaml from your video files.
+
+    Scans the given directory (or the current directory) for video files,
+    then asks you a few questions for each one and about the server.
+    The result is written to PATH (default: cameras.yaml).
+    """
+    if path.exists() and not force:
+        raise _fail(f"{path} already exists (use --force to overwrite)")
+
+    scan_dir = (scan or Path.cwd()).resolve()
+    if not scan_dir.is_dir():
+        raise _fail(f"not a directory: {scan_dir}")
+
+    video_extensions = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".m4v", ".webm", ".flv", ".wmv"}
+    candidates = sorted(
+        p for p in scan_dir.iterdir() if p.is_file() and p.suffix.lower() in video_extensions
+    )
+
+    console.print(f"\n[bold cyan]vcam generate[/] — interactive configuration wizard\n")
+
+    if not candidates:
+        console.print(f"[yellow]No video files found in {scan_dir}.[/]")
+        console.print("Add video files there or pass [bold]--scan <dir>[/] to choose another directory.")
+        raise typer.Exit(1)
+
+    console.print(f"Found [bold]{len(candidates)}[/] video file(s) in [dim]{scan_dir}[/]:\n")
+    for i, p in enumerate(candidates, 1):
+        console.print(f"  [dim]{i:2}.[/] {p.name}")
+    console.print()
+
+    # --- collect cameras ---
+    cameras: list[CameraSpec] = []
+    seen_names: set[str] = set()
+
+    for source_path in candidates:
+        include = typer.confirm(f"Include [bold]{source_path.name}[/]?", default=True)
+        if not include:
+            continue
+
+        # Suggest a name derived from the file stem
+        default_name = _slug(source_path.stem)
+        while True:
+            raw_name = typer.prompt("  Camera name", default=default_name)
+            if not CAMERA_NAME_RE.match(raw_name):
+                console.print(
+                    "  [red]Invalid name[/] — use letters, digits, '_', '-', or '.'",
+                )
+                continue
+            if raw_name in seen_names:
+                console.print(f"  [red]Name '{raw_name}' is already used[/] — choose another.")
+                continue
+            break
+        seen_names.add(raw_name)
+
+        # Probe to suggest copy vs transcode
+        info = try_probe(source_path)
+        if info and info.codec and info.codec.lower() in RTSP_PASSTHROUGH_CODECS:
+            codec_hint = f"[green]{info.codec}[/] (can copy)"
+            default_mode_val = StreamMode.COPY
+        elif info and info.codec:
+            codec_hint = f"[yellow]{info.codec}[/] (needs transcode)"
+            default_mode_val = StreamMode.TRANSCODE
+        else:
+            codec_hint = "[dim]unknown[/]"
+            default_mode_val = StreamMode.AUTO
+
+        if info:
+            res = info.resolution or "?"
+            fps_str = f"{info.fps:.2f}" if info.fps else "?"
+            dur_str = f"{info.duration:.0f}s" if info.duration else "?"
+            console.print(
+                f"  [dim]Detected:[/] codec={codec_hint}  "
+                f"resolution={res}  fps={fps_str}  duration={dur_str}"
+            )
+
+        raw_mode = typer.prompt(
+            "  Stream mode",
+            default=default_mode_val.value,
+            show_choices=True,
+            show_default=True,
+        )
+        try:
+            chosen_mode = StreamMode(raw_mode)
+        except ValueError:
+            chosen_mode = StreamMode.AUTO
+
+        offset = typer.prompt("  Start offset (seconds)", default="0", show_default=True)
+        try:
+            start_offset = float(offset)
+        except ValueError:
+            start_offset = 0.0
+
+        cameras.append(
+            CameraSpec(
+                name=raw_name,
+                source=source_path.resolve(),
+                mode=chosen_mode,
+                start_offset=start_offset,
+            )
+        )
+        console.print()
+
+    if not cameras:
+        console.print("[yellow]No cameras selected — nothing to write.[/]")
+        raise typer.Exit(0)
+
+    # --- server settings ---
+    console.print("[bold]Server settings[/] (press Enter to accept defaults)\n")
+
+    raw_port = typer.prompt("  RTSP port", default="8554", show_default=True)
+    try:
+        rtsp_port = int(raw_port)
+    except ValueError:
+        rtsp_port = 8554
+
+    add_auth = typer.confirm("  Require authentication (username/password)?", default=False)
+    auth: Optional[AuthSpec] = None
+    if add_auth:
+        while True:
+            username = typer.prompt("    Username")
+            if CREDENTIAL_RE.match(username):
+                break
+            console.print(f"    [red]Invalid characters.[/] Allowed: {CREDENTIAL_CHARS}")
+        while True:
+            password = typer.prompt("    Password", hide_input=True)
+            if CREDENTIAL_RE.match(password):
+                break
+            console.print(f"    [red]Invalid characters.[/] Allowed: {CREDENTIAL_CHARS}")
+        auth = AuthSpec(username=username, password=password)
+
+    server = ServerSpec(rtsp_port=rtsp_port, auth=auth)
+    stack = CameraStack(server=server, cameras=cameras)
+
+    # --- summary & write ---
+    console.print(f"\n[bold green]Summary[/] — {len(cameras)} camera(s) on port {rtsp_port}:\n")
+    for cam in cameras:
+        console.print(f"  [bold]{cam.name}[/]  ({cam.mode.value})  ← {cam.source.name}")
+    console.print()
+
+    save_stack(stack, path)
+    console.print(f"wrote [bold]{path}[/]\n")
+    console.print(
+        f"Run [bold]vcam run --config {path}[/] to start, "
+        "or [bold]vcam list --config " + str(path) + "[/] to review."
+    )
 
 
 @app.command()

@@ -186,7 +186,9 @@ Notes worth knowing:
 For anything beyond a couple of cameras, use a YAML file:
 
 ```bash
-uv run vcam init                          # writes ./cameras.yaml
+uv run vcam generate                      # interactive wizard — scan cwd, write ./cameras.yaml
+uv run vcam generate -d videos/           # scan a specific folder
+uv run vcam init                          # writes a template ./cameras.yaml
 uv run vcam init -s a.mp4 -s b.mp4        # ...seeded with two cameras
 uv run vcam add videos/cam2.mp4 -n cam2   # append a camera to it
 uv run vcam show                          # print the resolved config

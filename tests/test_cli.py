@@ -308,3 +308,119 @@ def test_dry_run_plans_one_server_per_port(tmp_path: Path, video_file: Path) -> 
 def test_bad_camera_argument_is_rejected(video_file: Path) -> None:
     result = invoke("run", "--camera", f"=%{video_file}", "--dry-run")
     assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# generate (interactive wizard)
+# ---------------------------------------------------------------------------
+
+
+def test_generate_writes_config_from_video_files(tmp_path: Path) -> None:
+    """Wizard accepts all defaults and produces a loadable config."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"\x00" * 64)
+    out = tmp_path / "cameras.yaml"
+
+    # Input: include file (y), accept name (clip), accept mode (auto),
+    #        accept offset (0), accept port (8554), no auth (n)
+    result = runner.invoke(
+        app,
+        ["generate", str(out), "--scan", str(tmp_path)],
+        input="y\nclip\nauto\n0\n8554\nn\n",
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert out.is_file()
+    stack = load_stack(out)
+    assert len(stack.cameras) == 1
+    assert stack.cameras[0].name == "clip"
+
+
+def test_generate_skips_excluded_files(tmp_path: Path) -> None:
+    """Files answered 'n' are not added to the config."""
+    (tmp_path / "a.mp4").write_bytes(b"\x00" * 64)
+    (tmp_path / "b.mp4").write_bytes(b"\x00" * 64)
+    out = tmp_path / "cameras.yaml"
+
+    # skip first file (n), include second (y), then defaults
+    result = runner.invoke(
+        app,
+        ["generate", str(out), "--scan", str(tmp_path)],
+        input="n\ny\nb\nauto\n0\n8554\nn\n",
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    stack = load_stack(out)
+    assert [c.name for c in stack.cameras] == ["b"]
+
+
+def test_generate_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
+    out = tmp_path / "cameras.yaml"
+    out.write_text("cameras: []\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["generate", str(out), "--scan", str(tmp_path)], input="")
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+
+
+def test_generate_with_force_overwrites(tmp_path: Path) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"\x00" * 64)
+    out = tmp_path / "cameras.yaml"
+    out.write_text("cameras: []\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["generate", str(out), "--scan", str(tmp_path), "--force"],
+        input="y\nclip\nauto\n0\n8554\nn\n",
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    stack = load_stack(out)
+    assert stack.cameras[0].name == "clip"
+
+
+def test_generate_exits_when_no_video_files_found(tmp_path: Path) -> None:
+    out = tmp_path / "cameras.yaml"
+    result = runner.invoke(app, ["generate", str(out), "--scan", str(tmp_path)], input="")
+    assert result.exit_code != 0
+    assert "No video files found" in result.output
+
+
+def test_generate_sets_custom_rtsp_port(tmp_path: Path) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"\x00" * 64)
+    out = tmp_path / "cameras.yaml"
+
+    result = runner.invoke(
+        app,
+        ["generate", str(out), "--scan", str(tmp_path)],
+        input="y\nclip\nauto\n0\n9000\nn\n",
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    stack = load_stack(out)
+    assert stack.server.rtsp_port == 9000
+
+
+def test_generate_with_auth(tmp_path: Path) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"\x00" * 64)
+    out = tmp_path / "cameras.yaml"
+
+    result = runner.invoke(
+        app,
+        ["generate", str(out), "--scan", str(tmp_path)],
+        input="y\nclip\nauto\n0\n8554\ny\nadmin\nsecret\n",
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    stack = load_stack(out)
+    assert stack.server.auth is not None
+    assert stack.server.auth.username == "admin"
+
