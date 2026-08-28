@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sys
 import tempfile
@@ -27,6 +28,7 @@ from .config import (
 )
 from .ffmpeg import build_publish_command, resolve_mode
 from .mediamtx import plan_instances, render_server_config_yaml
+from .pcap import PcapError, backend_version as pcap_backend_version
 from .models import (
     AuthSpec,
     CAMERA_NAME_RE,
@@ -44,7 +46,7 @@ from .models import (
     VideoSettings,
 )
 from .probe import ProbeError, probe as probe_source, try_probe
-from .supervisor import CameraRuntime, Supervisor, SupervisorError
+from .supervisor import CameraRuntime, REPLAY_PASSWORD_ENV, Supervisor, SupervisorError
 from . import service as _service
 from .service import ServiceError
 
@@ -611,24 +613,46 @@ def _quote(value: str) -> str:
 
 
 def _print_ready(stack: CameraStack, runtimes: list[CameraRuntime]) -> None:
-    table = Table(title="Virtual RTSP cameras", title_justify="left")
-    table.add_column("camera", style="bold cyan")
-    table.add_column("url")
-    table.add_column("mode")
-    table.add_column("sim")
-    table.add_column("source", style="dim")
-    for runtime in runtimes:
-        table.add_row(
-            runtime.camera.name,
-            runtime.read_url_with_credentials,
-            runtime.mode.value,
-            _simulation_label(runtime.camera),
-            str(runtime.camera.source),
-        )
-    console.print(table)
+    if runtimes:
+        table = Table(title="Virtual RTSP cameras", title_justify="left")
+        table.add_column("camera", style="bold cyan")
+        table.add_column("url")
+        table.add_column("mode")
+        table.add_column("sim")
+        table.add_column("source", style="dim")
+        for runtime in runtimes:
+            table.add_row(
+                runtime.camera.name,
+                runtime.read_url_with_credentials,
+                runtime.mode.value,
+                _simulation_label(runtime.camera),
+                str(runtime.camera.source),
+            )
+        console.print(table)
+    _print_replay_table(stack)
     if stack.server.auth is not None:
         console.print("[dim]readers must authenticate; credentials are embedded above[/]")
     console.print("[dim]press Ctrl-C to stop[/]")
+
+
+def _print_replay_table(stack: CameraStack, host: Optional[str] = None) -> None:
+    if not stack.replays:
+        return
+    table = Table(title="Capture replays", title_justify="left")
+    table.add_column("replay", style="bold magenta")
+    table.add_column("url")
+    table.add_column("loop")
+    table.add_column("speed")
+    table.add_column("capture", style="dim")
+    for replay in stack.replays:
+        table.add_row(
+            replay.name if replay.enabled else f"[strike]{replay.name}[/]",
+            stack.replay_url(replay, host),
+            "yes" if replay.loop else "no",
+            f"{replay.speed:g}x",
+            str(replay.source),
+        )
+    console.print(table)
 
 
 def _simulation_label(camera: CameraSpec) -> str:
@@ -934,9 +958,10 @@ def add(
 
 @app.command("list")
 def list_cameras(config: ConfigOption = None, host: DisplayHostOption = None) -> None:
-    """Show the cameras declared in a configuration file."""
+    """Show the cameras and replays declared in a configuration file."""
     stack = _load_stack_or_exit(config)
     _print_camera_table(stack, host)
+    _print_replay_table(stack, host)
 
 
 @app.command()
@@ -952,6 +977,9 @@ def urls(
     cameras = stack.cameras if all_cameras else stack.enabled_cameras
     for camera in cameras:
         print(stack.read_url(camera, host))
+    replays = stack.replays if all_cameras else stack.enabled_replays
+    for replay in replays:
+        print(stack.replay_url(replay, host))
 
 
 @app.command()
@@ -1021,6 +1049,120 @@ def clock_status(
 
 
 @app.command()
+def replay(
+    capture: Annotated[
+        Path, typer.Argument(help="Capture file to replay (.pcap or .pcapng).")
+    ],
+    path: Annotated[
+        Optional[str],
+        typer.Option("--path", help="RTSP path to serve on (default: the capture file stem)."),
+    ] = None,
+    host: HostOption = None,
+    port: Annotated[
+        int, typer.Option("--port", "-p", help="RTSP port for the replay listener.")
+    ] = 8554,
+    loop: Annotated[
+        bool, typer.Option("--loop/--no-loop", help="Replay the capture forever (default: on).")
+    ] = True,
+    rewrite_on_loop: Annotated[
+        bool,
+        typer.Option(
+            "--rewrite-on-loop/--no-rewrite-on-loop",
+            help=(
+                "Keep RTP sequence numbers and timestamps monotonic across loops. "
+                "Disable to reproduce a raw rewind (decoders usually stall)."
+            ),
+        ),
+    ] = True,
+    speed: Annotated[
+        float, typer.Option("--speed", help="Playback speed multiplier (1.0 = as captured).")
+    ] = 1.0,
+    sdp: Annotated[
+        Optional[Path],
+        typer.Option("--sdp", help="Session description to use when the capture has no DESCRIBE."),
+    ] = None,
+    username: Annotated[
+        Optional[str], typer.Option("--username", help="Require basic auth with this username.")
+    ] = None,
+    password: Annotated[
+        Optional[str], typer.Option("--password", help="Password for --username.")
+    ] = None,
+    list_tracks: Annotated[
+        bool,
+        typer.Option("--list-tracks", help="Describe the capture and exit without serving."),
+    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Verbose logging.")] = False,
+) -> None:
+    """Replay RTP captured from a real camera, byte for byte, over RTSP.
+
+    The packets are sent exactly as they were captured — same payloads, same
+    SSRC, same fragmentation, same inter-packet timing — so a fault that only
+    reproduces at the packet level still reproduces here. Nothing is decoded or
+    re-packetised on the way out.
+    """
+    _setup_logging(verbose)
+
+    capture_path = Path(capture).expanduser()
+    if not capture_path.is_file():
+        raise _fail(f"capture file not found: {capture_path}")
+    if sdp is not None and not Path(sdp).expanduser().is_file():
+        raise _fail(f"SDP file not found: {sdp}")
+    # The supervisor passes the password through the environment so it never
+    # appears in argv, where any user on the box could read it.
+    secret = password if password is not None else os.environ.get(REPLAY_PASSWORD_ENV)
+    if (username is None) != (secret is None):
+        raise _fail(
+            f"--username and --password (or ${REPLAY_PASSWORD_ENV}) must be given together"
+        )
+    password = secret
+
+    from . import replay_source as _replay_source
+    from .rtsp_replay import ReplayServer
+
+    try:
+        source = _replay_source.load(
+            capture_path, sdp_override=Path(sdp).expanduser() if sdp else None
+        )
+    except _replay_source.ReplaySourceError as exc:
+        raise _fail(str(exc))
+    except PcapError as exc:
+        raise _fail(str(exc))
+
+    for warning in source.warnings:
+        error_console.print(f"[yellow]warning:[/] {warning}")
+
+    console.print(_replay_source.describe(source))
+    if list_tracks:
+        return
+
+    try:
+        server = ReplayServer(
+            source,
+            host=host or "0.0.0.0",
+            port=port,
+            path=path or capture_path.stem,
+            username=username,
+            password=password,
+            loop=loop,
+            speed=speed,
+            rewrite_on_loop=rewrite_on_loop,
+        )
+    except OSError as exc:
+        raise _fail(f"could not bind RTSP port {port}: {exc}")
+    except ValueError as exc:
+        raise _fail(str(exc))
+
+    console.print(f"serving [bold]{server.rtsp_url()}[/]")
+    console.print("[dim]press Ctrl-C to stop[/]")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("stopping")
+    finally:
+        server.shutdown()
+
+
+@app.command()
 def probe(
     source: Annotated[Path, typer.Argument(help="Video file to inspect.")],
 ) -> None:
@@ -1083,6 +1225,12 @@ def doctor(
     except binaries.BinaryError as exc:
         ok = False
         console.print(f"[red]MISS[/] {exc}")
+
+    # Capture replay is optional: report it, but never fail the check on it.
+    try:
+        console.print(f"[green]OK[/]   pcap backend: {pcap_backend_version()}")
+    except PcapError as exc:
+        console.print(f"[yellow]WARN[/] pcap backend: {exc}")
 
     if not ok:
         raise typer.Exit(1)

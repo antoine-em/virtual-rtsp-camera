@@ -5,6 +5,16 @@
 
 This document proposes concrete implementation paths for the three technically uncertain areas from the plan's Phase 1 spike. Each path is described with enough detail to start coding immediately.
 
+> **⚠️ Superseded in part by plan revision 1.1.** Three recommendations below did not survive review and were changed before implementation:
+>
+> | Section | Original recommendation | Outcome |
+> |---|---|---|
+> | Path A | `scapy` for PCAP I/O | **Kept**, with a lazy import so the CLI hot path does not pay for it. |
+> | Path B | **B1** — raw UDP into MediaMTX | **Rejected.** The `source: rtp://` syntax does not exist (MediaMTX spells it `udp+rtp://` and needs `rtpSDP`), and more importantly MediaMTX re-packetises RTP, destroying the wire-level fidelity that is the whole point of replay. Replaced by a self-hosted minimal RTSP server (plan ALT-005). |
+> | Path C | **C1** — asyncio byte-pipe camera → MediaMTX `ANNOUNCE` | **Rejected as written.** RTSP is not a symmetric byte pipe: the camera is a server and MediaMTX expects a client doing ANNOUNCE/SETUP/RECORD. A real proxy is server-downstream + client-upstream with URI/Transport rewriting, and MediaMTX is not in that path. **C2 (`tcpdump` side-car) is the current capture story**, and the whole proxy is deferred to plan revision 1.2. |
+>
+> The "Docker / Linux capability constraints" section at the end remains accurate and is the reason `tcpdump` is a viable capture path today.
+
 ---
 
 ## Path A — PCAP I/O library choice

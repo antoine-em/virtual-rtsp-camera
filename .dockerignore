@@ -7,6 +7,8 @@ __pycache__/
 .pytest_cache
 dist
 build
+tmp
+plan
 .vcam
 *.mediamtx.yml
 health.json

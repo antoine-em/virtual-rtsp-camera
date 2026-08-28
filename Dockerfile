@@ -54,8 +54,10 @@ WORKDIR /vcam
 
 # pip is only needed to install the wheel; dropping it from the runtime image
 # removes a package that regularly carries advisories and is never used here.
+# The replay extra (scapy) is installed here because capture replay is a
+# first-class use case in the container; the base wheel leaves it out.
 COPY --from=build /out/vcam-*.whl /tmp/wheel/
-RUN pip install --no-cache-dir /tmp/wheel/vcam-*.whl \
+RUN pip install --no-cache-dir "$(ls /tmp/wheel/vcam-*.whl)[replay]" \
     && rm -rf /tmp/wheel \
     && pip uninstall -y pip
 

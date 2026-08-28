@@ -183,6 +183,54 @@ class CameraSpec(BaseModel):
         return self.name
 
 
+class ReplaySpec(BaseModel):
+    """A capture file replayed over its own RTSP listener.
+
+    Replay does not go through MediaMTX — a media server re-packetises RTP,
+    which would erase exactly the wire-level detail a capture exists to
+    preserve — so each replay owns a dedicated port rather than sharing the
+    camera server's.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    source: Path = Field(description="Path to a .pcap or .pcapng capture")
+    port: int = Field(gt=0, le=65535, description="RTSP port for this replay's own listener")
+    enabled: bool = True
+    loop: bool = True
+    speed: float = Field(default=1.0, gt=0, le=100, description="Playback speed multiplier")
+    rewrite_on_loop: bool = Field(
+        default=True,
+        description=(
+            "Keep RTP sequence numbers and timestamps monotonic across loops. "
+            "Disable only to reproduce what a raw rewind looks like to a decoder."
+        ),
+    )
+    sdp: Optional[Path] = Field(
+        default=None,
+        description="Override the session description when the capture has no DESCRIBE",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        if not CAMERA_NAME_RE.match(value):
+            raise ValueError(
+                f"replay name {value!r} is not a valid RTSP path segment "
+                "(use letters, digits, '_', '-', '.')"
+            )
+        return value
+
+    @field_validator("source", "sdp")
+    @classmethod
+    def _expand(cls, value: Optional[Path]) -> Optional[Path]:
+        return Path(value).expanduser() if value is not None else None
+
+    def path_suffix(self) -> str:
+        return self.name
+
+
 class AuthSpec(BaseModel):
     """Credentials required from RTSP readers."""
 
@@ -239,12 +287,13 @@ class ServerSpec(BaseModel):
 
 
 class CameraStack(BaseModel):
-    """Top-level configuration: one server definition plus its cameras."""
+    """Top-level configuration: one server definition, its cameras and replays."""
 
     model_config = ConfigDict(extra="forbid")
 
     server: ServerSpec = Field(default_factory=ServerSpec)
     cameras: list[CameraSpec] = Field(default_factory=list)
+    replays: list[ReplaySpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_unique_paths(self) -> "CameraStack":
@@ -256,11 +305,29 @@ class CameraStack(BaseModel):
                     f"duplicate camera path: rtsp://...:{key[0]}/{key[1]} is declared twice"
                 )
             seen.add(key)
+
+        # A replay runs its own listener, so it cannot share a port with the
+        # MediaMTX instance serving the cameras — not even on a different path.
+        camera_ports = {camera.port or self.server.rtsp_port for camera in self.cameras}
+        replay_ports: set[int] = set()
+        for replay in self.replays:
+            if replay.port in camera_ports:
+                raise ValueError(
+                    f"replay {replay.name!r} uses port {replay.port}, which is already "
+                    "served by MediaMTX; give the replay its own port"
+                )
+            if replay.port in replay_ports:
+                raise ValueError(f"port {replay.port} is claimed by two replays")
+            replay_ports.add(replay.port)
         return self
 
     @property
     def enabled_cameras(self) -> list[CameraSpec]:
         return [camera for camera in self.cameras if camera.enabled]
+
+    @property
+    def enabled_replays(self) -> list[ReplaySpec]:
+        return [replay for replay in self.replays if replay.enabled]
 
     def effective_port(self, camera: CameraSpec) -> int:
         return camera.port or self.server.rtsp_port
@@ -268,6 +335,22 @@ class CameraStack(BaseModel):
     def publish_url(self, camera: CameraSpec) -> str:
         """Loopback URL the local ffmpeg publisher pushes to (never authenticated)."""
         return f"rtsp://127.0.0.1:{self.effective_port(camera)}/{camera.path_suffix()}"
+
+    def replay_url(
+        self,
+        replay: ReplaySpec,
+        host: Optional[str] = None,
+        *,
+        with_credentials: bool = True,
+    ) -> str:
+        display_host = host or self.display_host()
+        credentials = ""
+        if with_credentials and self.server.auth is not None:
+            credentials = (
+                f"{quote(self.server.auth.username, safe='')}:"
+                f"{quote(self.server.auth.password, safe='')}@"
+            )
+        return f"rtsp://{credentials}{display_host}:{replay.port}/{replay.path_suffix()}"
 
     def read_url(
         self,

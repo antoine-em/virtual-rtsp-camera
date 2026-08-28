@@ -13,10 +13,14 @@ flowchart LR
     F --> M["MediaMTX<br/>RTSP server"]
     M --> U["rtsp://host:8554/cam1<br/>rtsp://host:8554/cam2"]
     U --> D["DeepStream / Node-RED /<br/>VLC / ffprobe"]
+    P["capture<br/>camera.pcap"] --> RP["vcam replay<br/>(own RTSP server)"]
+    RP --> U2["rtsp://host:8600/cam1"]
+    U2 --> D
 ```
 
 One server process per **port**, one path per **camera**, one ffmpeg publisher per camera,
-restarted automatically if it dies.
+restarted automatically if it dies. Replays sit beside that pipeline, not inside it: they
+own their listener so no component can re-packetise the captured RTP.
 
 ## Command map
 
@@ -24,6 +28,7 @@ restarted automatically if it dies.
 | --- | --- |
 | `vcam doctor` | Check ffmpeg / ffprobe / MediaMTX before anything else |
 | `vcam probe FILE` | Inspect a clip; shows which mode `auto` would choose |
+| `vcam replay CAPTURE` | Serve a `.pcap`/`.pcapng` of a real camera, byte for byte (`--list-tracks` to inspect) |
 | `vcam generate [-d dir]` | **Interactive wizard** — scan a folder, answer prompts, write `cameras.yaml` |
 | `vcam init [-s file …]` | Create `./cameras.yaml` from a template |
 | `vcam add FILE -n cam2` | Append a camera to the config |
@@ -126,7 +131,46 @@ uv run vcam run -s videos/cam1.mp4 --simulation flaky \
 `flaky` and `stutter` are driven by the supervisor at run time; the others are baked into
 the encoder filter chain. Extra ffmpeg filters: `--simulation-filters 'gblur=sigma=2'`.
 
-## Use case 6 — emulate physically separate devices
+## Use case 6 — replay a real camera's packets
+
+When a synthetic fault is not faithful enough, capture the real camera and replay the RTP
+byte for byte. No MediaMTX, no ffmpeg, no re-packetisation — same payloads, same SSRC,
+same sequence numbers, same fragmentation, same timing.
+
+```bash
+# capture (UDP or TCP-interleaved, both work)
+sudo tcpdump -i eth0 -s 0 -w camera.pcap host 192.168.1.64 and tcp port 554
+
+uv sync --extra replay                              # scapy is an optional extra
+uv run vcam replay camera.pcap --list-tracks        # what's in it?
+uv run vcam replay camera.pcap --port 8600 --path cam1
+# -> rtsp://127.0.0.1:8600/cam1
+```
+
+| Flag | Why |
+| --- | --- |
+| `--port` | replays own their listener — pick a port no camera uses |
+| `--sdp file` | capture has no `DESCRIBE`; supply the session description |
+| `--no-loop` | play once and stop |
+| `--no-rewrite-on-loop` | let the rewind be visible (decoders stall — that's the point) |
+| `--speed 2.0` | replay faster than captured |
+| `--username/--password` | require basic auth (`$VCAM_REPLAY_PASSWORD` keeps the secret out of argv) |
+
+Not supported by design: `PAUSE` (answered `501` — resuming would rewind the RTP counters),
+seeking, and RTCP Sender Reports. Captures over 512 MB are refused; trim them or raise
+`$VCAM_MAX_CAPTURE_BYTES`.
+
+In YAML (`source` is the capture, one port each):
+
+```yaml
+replays:
+  - { name: broken-cam, source: captures/broken.pcap, port: 8600 }
+```
+
+⚠️ Captures record RTSP `Authorization` headers and `rtsp://user:pass@host` URIs in clear
+text — `--list-tracks` warns you. Scrub before sharing: `editcap -E 0 in.pcap out.pcap`.
+
+## Use case 7 — emulate physically separate devices
 
 Default is one port, many paths. Give a camera its own `port:` only when you need a
 separate device (a second MediaMTX instance is spawned per port group).
@@ -137,7 +181,7 @@ cameras:
   - { name: cam3, source: videos/cam3.mp4, port: 8555 } # :8555/cam3
 ```
 
-## Use case 7 — require credentials
+## Use case 8 — require credentials
 
 ```bash
 uv run vcam run -s videos/cam1.mp4 --username reader --password s3cret
@@ -147,7 +191,7 @@ uv run vcam run -s videos/cam1.mp4 --username reader --password s3cret
 Readers must authenticate; local publishers keep working without a password, and anonymous
 publishing is restricted to loopback. Without `auth`, everything is anonymous.
 
-## Use case 8 — run it in Docker (no local Python/ffmpeg)
+## Use case 9 — run it in Docker (no local Python/ffmpeg)
 
 ```bash
 docker build -t vcam:latest .
@@ -174,7 +218,7 @@ Multi-arch (aarch64 EdgeAI boxes):
 docker buildx build --platform linux/arm64,linux/amd64 -t vcam:latest --push .
 ```
 
-## Use case 9 — operate / debug a running stack
+## Use case 10 — operate / debug a running stack
 
 ```bash
 uv run vcam run --dry-run                            # print the plan, start nothing
@@ -223,3 +267,8 @@ uv run vcam run -c cameras.yaml --mode transcode --resolution 640x360 --fps 10
   adjust or drop the healthcheck if you change it.
 - MediaMTX resolution order: `--mediamtx-binary` → `$VCAM_MEDIAMTX_BIN` → `PATH` → cache →
   download. `vcam doctor` tells you which one you'd get.
+- A replay **cannot** share a camera's port — it runs its own RTSP listener instead of
+  MediaMTX, and `vcam` refuses a config where the ports collide.
+- Looping a capture rewrites RTP sequence numbers and timestamps forward so decoders don't
+  stall; the packet payloads stay byte-identical. `--no-rewrite-on-loop` opts out.
+- A stack with only `replays:` and no `cameras:` starts no MediaMTX at all.

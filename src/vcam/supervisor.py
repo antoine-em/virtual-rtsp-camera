@@ -21,13 +21,18 @@ from .mediamtx import ServerInstance, plan_instances, write_server_config
 from .models import (
     CameraSpec,
     CameraStack,
+    ReplaySpec,
     SimulationMode,
     SimulationSpec,
     StreamMode,
 )
 from .probe import MediaInfo, try_probe
+from .service import vcam_command
 
 logger = logging.getLogger("vcam")
+
+#: Environment variable carrying the reader password to a spawned `vcam replay`.
+REPLAY_PASSWORD_ENV = "VCAM_REPLAY_PASSWORD"
 
 BACKOFF_BASE = 1.0
 BACKOFF_MAX = 30.0
@@ -41,6 +46,11 @@ class ManagedProcess:
     name: str
     command: list[str]
     kind: str  # "server" or "publisher"
+    env: Optional[dict[str, str]] = None
+    """Extra environment for the child, merged over the supervisor's own.
+
+    Used for secrets: argv is world-readable through /proc/<pid>/cmdline.
+    """
     process: Optional[subprocess.Popen] = None
     restarts: int = 0
     consecutive_failures: int = 0
@@ -72,6 +82,7 @@ class ManagedProcess:
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                env={**os.environ, **self.env} if self.env else None,
             )
         except OSError as exc:
             logger.error("%s: failed to start: %s", self.name, exc)
@@ -146,6 +157,62 @@ class CameraRuntime:
     process: ManagedProcess
     scheduler: Optional["SimulationScheduler"] = None
     """Drives the dropout cycle of a flaky camera, None otherwise."""
+
+
+@dataclass
+class ReplayRuntime:
+    replay: ReplaySpec
+    read_url: str
+    """Credential-free URL, safe for logs and the health file."""
+    read_url_with_credentials: str
+    process: ManagedProcess
+
+
+def build_replay_command(
+    replay: ReplaySpec,
+    stack: CameraStack,
+    *,
+    host: str,
+    verbose: bool = False,
+) -> list[str]:
+    """The `vcam replay` invocation the supervisor spawns for one capture."""
+    command = [
+        *vcam_command(),
+        "replay",
+        str(replay.source),
+        "--path",
+        replay.name,
+        "--host",
+        host,
+        "--port",
+        str(replay.port),
+        "--speed",
+        str(replay.speed),
+    ]
+    command.append("--loop" if replay.loop else "--no-loop")
+    if not replay.rewrite_on_loop:
+        command.append("--no-rewrite-on-loop")
+    if replay.sdp is not None:
+        command += ["--sdp", str(replay.sdp)]
+    if stack.server.auth is not None:
+        # The password goes through the environment instead: see
+        # build_replay_env.
+        command += ["--username", stack.server.auth.username]
+    if verbose:
+        command.append("--verbose")
+    return command
+
+
+def build_replay_env(stack: CameraStack) -> dict[str, str]:
+    """Extra environment for a spawned `vcam replay`.
+
+    The reader password is passed here rather than on the command line because
+    argv is readable by every user on the box via /proc/<pid>/cmdline — the
+    same reason the camera credentials go into a MediaMTX config file.
+    """
+    if stack.server.auth is None:
+        return {}
+    return {REPLAY_PASSWORD_ENV: stack.server.auth.password}
 
 
 class SupervisorError(RuntimeError):
@@ -232,6 +299,7 @@ class Supervisor:
         self.instances: list[ServerInstance] = []
         self.servers: list[ManagedProcess] = []
         self.runtimes: list[CameraRuntime] = []
+        self.replays: list[ReplayRuntime] = []
         self._stop = threading.Event()
 
     # -- lifecycle -----------------------------------------------------------
@@ -251,12 +319,16 @@ class Supervisor:
     def prepare(self) -> None:
         """Validate sources, plan instances and render server configs."""
         cameras = self.stack.enabled_cameras
-        if not cameras:
-            raise SupervisorError("no enabled cameras to serve")
+        replays = self.stack.enabled_replays
+        if not cameras and not replays:
+            raise SupervisorError("no enabled cameras or replays to serve")
 
         missing = [camera for camera in cameras if not camera.source.is_file()]
-        if missing:
-            details = "\n".join(f"  - {c.name}: {c.source}" for c in missing)
+        missing_captures = [replay for replay in replays if not replay.source.is_file()]
+        if missing or missing_captures:
+            details = "\n".join(
+                f"  - {item.name}: {item.source}" for item in [*missing, *missing_captures]
+            )
             raise SupervisorError(f"source file(s) not found:\n{details}")
 
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -304,6 +376,27 @@ class Supervisor:
                     )
                 self.runtimes.append(runtime)
 
+        verbose = logger.isEnabledFor(logging.DEBUG)
+        for replay in replays:
+            self.replays.append(
+                ReplayRuntime(
+                    replay=replay,
+                    read_url=self.stack.replay_url(replay, with_credentials=False),
+                    read_url_with_credentials=self.stack.replay_url(replay),
+                    process=ManagedProcess(
+                        name=replay.name,
+                        kind="replay",
+                        command=build_replay_command(
+                            replay,
+                            self.stack,
+                            host=self.stack.server.host,
+                            verbose=verbose,
+                        ),
+                        env=build_replay_env(self.stack) or None,
+                    ),
+                )
+            )
+
     def run(self) -> int:
         """Start everything and block until interrupted. Returns an exit code."""
         self._install_signal_handlers()
@@ -324,8 +417,12 @@ class Supervisor:
         for runtime in self.runtimes:
             runtime.process.start()
 
+        for replay in self.replays:
+            replay.process.start()
+
         if self.verify:
             self._verify_streams()
+            self._verify_replays()
 
         if self.on_ready is not None:
             self.on_ready(self.runtimes)
@@ -387,10 +484,16 @@ class Supervisor:
         return 0
 
     def _all_processes(self) -> list[ManagedProcess]:
-        return [*self.servers, *(runtime.process for runtime in self.runtimes)]
+        return [
+            *self.servers,
+            *(runtime.process for runtime in self.runtimes),
+            *(replay.process for replay in self.replays),
+        ]
 
     def shutdown(self) -> None:
         self._stop.set()
+        for replay in self.replays:
+            replay.process.stop()
         for runtime in self.runtimes:
             runtime.process.stop()
         for server in self.servers:
@@ -416,6 +519,15 @@ class Supervisor:
 
         for name in pending:
             logger.warning("%s: not publishing yet (check the ffmpeg log above)", name)
+
+    def _verify_replays(self, timeout: float = 15.0) -> None:
+        for replay in self.replays:
+            if _wait_for_port("127.0.0.1", replay.replay.port, timeout=timeout):
+                logger.info("%s: ready at %s", replay.replay.name, replay.read_url)
+            else:
+                logger.warning(
+                    "%s: replay did not open RTSP port %s", replay.replay.name, replay.replay.port
+                )
 
     def health_snapshot(self) -> dict[str, Any]:
         return {
@@ -448,6 +560,18 @@ class Supervisor:
                     ),
                 }
                 for runtime in self.runtimes
+            ],
+            "replays": [
+                {
+                    "name": replay.replay.name,
+                    "url": replay.read_url,
+                    "source": str(replay.replay.source),
+                    "running": replay.process.running,
+                    "pid": replay.process.pid,
+                    "restarts": replay.process.restarts,
+                    "last_exit_code": replay.process.last_exit_code,
+                }
+                for replay in self.replays
             ],
         }
 
