@@ -135,6 +135,12 @@ class _Player(threading.Thread):
             base += loop_period / speed
 
         logger.debug("replay: playback finished for %s", self._connection.peer)
+        if not self._pacer.stopped:
+            # The capture is exhausted and we are not looping, so nothing will
+            # ever arrive on this connection again. Hang up: a reader parked in
+            # recv has no other way to learn the stream ended, and ffmpeg will
+            # wait indefinitely rather than finish the file it is writing.
+            self._connection.end_of_stream()
 
     @staticmethod
     def _packet(
@@ -168,6 +174,7 @@ class _Connection:
         self.transports: dict[int, _Transport] = {}
         self.player: _Player | None = None
         self._write_lock = threading.Lock()
+        self._close_lock = threading.Lock()
 
     def send_raw(self, data: bytes) -> None:
         with self._write_lock:
@@ -199,9 +206,15 @@ class _Connection:
 
     def close(self) -> None:
         self.stop_player()
-        for transport in self.transports.values():
+        # close() races with itself: the handler's cleanup, shutdown() and now
+        # end_of_stream() can all reach it at once. Take the transports out of
+        # the dict before closing them, or one caller iterates while another
+        # clears ("dictionary changed size during iteration").
+        with self._close_lock:
+            transports = list(self.transports.values())
+            self.transports.clear()
+        for transport in transports:
             transport.close()
-        self.transports.clear()
 
     def disconnect(self) -> None:
         """Release everything *and* unblock the handler thread.
@@ -216,6 +229,15 @@ class _Connection:
         with contextlib.suppress(OSError):
             self.socket.shutdown(socket.SHUT_RDWR)
         self.close()
+
+    def end_of_stream(self) -> None:
+        """Hang up once the capture has been played out in full.
+
+        This runs on the player thread itself, so ``stop_player``'s self-join
+        guard is what keeps it from deadlocking.
+        """
+        self.server.unregister(self)
+        self.disconnect()
 
 
 class _RtspHandler(socketserver.BaseRequestHandler):

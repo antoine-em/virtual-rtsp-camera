@@ -531,3 +531,33 @@ def test_shutdown_is_safe_without_any_readers(udp_capture) -> None:
     server.start()
     server.shutdown()
     server.shutdown()  # idempotent: the CLI calls it from a `finally` after Ctrl-C
+
+
+def test_reader_is_disconnected_when_a_non_looping_capture_ends(tmp_path: Path) -> None:
+    """A finished capture must hang up rather than leave the reader waiting.
+
+    Without this, `--no-loop` strands every client: the player returns, the
+    connection stays open with no further data, and a reader parked in recv
+    waits forever. Observed with real ffmpeg, which sat on an exhausted
+    12-second capture for minutes instead of finalising its output file.
+    """
+    path = tmp_path / "short.pcap"
+    write_interleaved_capture(path, packets=rtp_series(6), interval=0.005)
+    server = ReplayServer(
+        replay_source.load(path), host="127.0.0.1", port=0, path="replay", loop=False
+    )
+    server.start()
+
+    client = RtspClient("127.0.0.1", server.port, "replay")
+    try:
+        client.request("SETUP", f"{client.url}/trackID=0", Transport="RTP/AVP/TCP;interleaved=0-1")
+        client.request("PLAY")
+
+        client.socket.settimeout(5)
+        while True:
+            chunk = client.socket.recv(65536)
+            if not chunk:
+                break  # EOF: the server hung up, which is the point
+    finally:
+        client.close()
+        server.shutdown()
