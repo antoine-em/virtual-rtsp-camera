@@ -13,6 +13,10 @@ from .models import CameraSpec, CameraStack, ServerSpec
 
 LOCALHOST_IPS = ["127.0.0.1", "::1"]
 
+#: The address MediaMTX's HTTP API binds. The port preflight has to probe this
+#: same address, or it will hand out a port the API cannot actually open.
+API_HOST = "127.0.0.1"
+
 
 #: Number of consecutive UDP ports MediaMTX reserves for RTP/RTCP/SRTP/multicast.
 UDP_BLOCK_SIZE = 8
@@ -34,7 +38,7 @@ class ServerInstance:
 
     @property
     def api_url(self) -> str:
-        return f"http://127.0.0.1:{self.api_port}"
+        return f"http://{API_HOST}:{self.api_port}"
 
 
 def plan_instances(stack: CameraStack) -> list[ServerInstance]:
@@ -52,7 +56,9 @@ def plan_instances(stack: CameraStack) -> list[ServerInstance]:
     next_api = stack.server.api_port
     next_rtp = stack.server.rtp_port
     for rtsp_port in sorted(groups):
-        api_port = _next_free_port(next_api, taken)
+        # The API always listens on loopback (see `apiAddress` below), so the
+        # port has to be probed there rather than on the wildcard address.
+        api_port = _next_free_port(next_api, taken, host=API_HOST)
         taken.add(api_port)
         next_api = api_port + 1
 
@@ -73,21 +79,29 @@ def plan_instances(stack: CameraStack) -> list[ServerInstance]:
     return instances
 
 
-def _next_free_port(start: int, taken: set[int]) -> int:
+def _next_free_port(start: int, taken: set[int], host: str = "") -> int:
     port = start
     while port < 65535:
-        if port not in taken and _port_is_free(port):
+        if port not in taken and _port_is_free(port, host=host):
             return port
         port += 1
     raise RuntimeError(f"no free TCP port available from {start}")
 
 
-def _port_is_free(port: int, kind: int = socket.SOCK_STREAM) -> bool:
+def _port_is_free(port: int, kind: int = socket.SOCK_STREAM, host: str = "") -> bool:
+    """Is ``port`` free *on the address the server will actually bind*?
+
+    ``host`` matters more than it looks. Probing the wildcard address while the
+    server binds ``127.0.0.1`` (as ``apiAddress`` does) reports a held port as
+    free on BSD and macOS, because ``SO_REUSEADDR`` permits binding
+    ``0.0.0.0:p`` while another socket holds ``127.0.0.1:p``. MediaMTX then
+    fails with "address already in use" for a port we just called available.
+    """
     with socket.socket(socket.AF_INET, kind) as sock:
         if kind == socket.SOCK_STREAM:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            sock.bind(("", port))
+            sock.bind((host, port))
         except OSError:
             return False
     return True
@@ -166,7 +180,7 @@ def render_server_config(instance: ServerInstance, server: ServerSpec) -> dict[s
         "readTimeout": server.read_timeout,
         "writeTimeout": server.write_timeout,
         "api": True,
-        "apiAddress": f"127.0.0.1:{instance.api_port}",
+        "apiAddress": f"{API_HOST}:{instance.api_port}",
         "metrics": False,
         "pprof": False,
         "playback": False,

@@ -19,7 +19,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from .ffmpeg import build_publish_command, effective_mode
-from .mediamtx import ServerInstance, plan_instances, write_server_config
+from .mediamtx import UDP_BLOCK_SIZE, ServerInstance, plan_instances, write_server_config
 from .models import (
     CameraSpec,
     CameraStack,
@@ -405,8 +405,14 @@ class Supervisor:
         for instance in self.instances:
             if not _wait_for_port("127.0.0.1", instance.rtsp_port, timeout=15.0):
                 self.shutdown()
+                # The RTSP port is the one being waited on, but MediaMTX exits
+                # if *any* of its listeners collide, so naming only the RTSP
+                # port sends people looking at the wrong thing.
                 raise SupervisorError(
-                    f"MediaMTX did not open RTSP port {instance.rtsp_port} in time"
+                    f"MediaMTX did not open RTSP port {instance.rtsp_port} in time "
+                    f"(it also needs API port {instance.api_port} and UDP "
+                    f"{instance.rtp_port}-{instance.rtp_port + UDP_BLOCK_SIZE - 1}; "
+                    "check the MediaMTX log above for 'address already in use')"
                 )
 
         for runtime in self.runtimes:
