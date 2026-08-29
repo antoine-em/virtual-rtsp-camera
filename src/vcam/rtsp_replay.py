@@ -243,9 +243,14 @@ class _Connection:
 
         This runs on the player thread itself, so ``stop_player``'s self-join
         guard is what keeps it from deadlocking.
+
+        Unregistering last, as in the handler's cleanup, keeps the connection
+        visible to ``shutdown`` for as long as this thread is still alive.
         """
-        self.server.unregister(self)
-        self.disconnect()
+        try:
+            self.disconnect()
+        finally:
+            self.server.unregister(self)
 
 
 class _RtspHandler(socketserver.BaseRequestHandler):
@@ -286,8 +291,14 @@ class _RtspHandler(socketserver.BaseRequestHandler):
                     if not keep_open:
                         return
         finally:
-            server.unregister(connection)
-            connection.close()
+            # Close *before* unregistering. The other way round leaves a window
+            # where the connection is invisible to shutdown() while its player
+            # is still winding down, so shutdown() snapshots an empty set and
+            # returns with RTP in flight.
+            try:
+                connection.close()
+            finally:
+                server.unregister(connection)
             logger.info("replay: reader disconnected from %s", peer)
 
 

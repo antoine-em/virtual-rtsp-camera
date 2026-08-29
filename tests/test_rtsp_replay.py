@@ -582,6 +582,53 @@ def test_shutdown_waits_even_when_another_thread_closed_first(
     assert not alive_at_shutdown, f"shutdown() returned with {alive_at_shutdown} still running"
 
 
+def test_shutdown_waits_for_a_reader_whose_handler_is_already_cleaning_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connection stays visible to shutdown() until its player is dead.
+
+    When the reader hangs up, the handler's ``finally`` tears the connection
+    down. It used to unregister first, which left a window where the connection
+    was gone from the server's set while its player thread was still unwinding:
+    ``shutdown()`` snapshotted an empty set, did nothing, and returned with RTP
+    still going out. Closing first keeps the connection reachable for exactly
+    as long as it can still stream.
+    """
+    from vcam import rtsp_replay
+
+    original_run = rtsp_replay._Player.run
+
+    def slow_run(self: rtsp_replay._Player) -> None:
+        try:
+            original_run(self)
+        finally:
+            time.sleep(0.4)
+
+    monkeypatch.setattr(rtsp_replay._Player, "run", slow_run)
+
+    path = tmp_path / "cleanup.pcap"
+    write_interleaved_capture(path, packets=rtp_series(400), interval=0.005)
+    server = ReplayServer(replay_source.load(path), host="127.0.0.1", port=0, path="replay")
+    server.start()
+
+    client = RtspClient("127.0.0.1", server.port, "replay")
+    client.request("SETUP", f"{client.url}/trackID=0", Transport="RTP/AVP/TCP;interleaved=0-1")
+    client.request("PLAY")
+    time.sleep(0.15)
+
+    # Drop the reader, then let the handler get into its cleanup before asking
+    # the server to stop. That is the window the old ordering opened.
+    client.close()
+    time.sleep(0.05)
+
+    server.shutdown()
+    alive_at_shutdown = [
+        thread.name for thread in threading.enumerate() if thread.name.startswith("vcam-replay")
+    ]
+
+    assert not alive_at_shutdown, f"shutdown() returned with {alive_at_shutdown} still running"
+
+
 def test_shutdown_is_safe_without_any_readers(udp_capture) -> None:
     path, _ = udp_capture
     server = ReplayServer(replay_source.load(path), host="127.0.0.1", port=0, path="replay")
