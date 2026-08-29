@@ -11,15 +11,15 @@ majority of ``vcam`` invocations never touch a capture file.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Iterator, Optional
 
 #: Ports below this are almost never used for dynamically negotiated RTP.
 _MIN_DYNAMIC_PORT = 1024
 
-_scapy: Optional[SimpleNamespace] = None
+_scapy: SimpleNamespace | None = None
 
 
 class PcapError(RuntimeError):
@@ -61,12 +61,12 @@ def _layers() -> SimpleNamespace:
 def backend_version() -> str:
     """Return the scapy version backing capture I/O, for ``vcam doctor``."""
     _layers()
-    import scapy  # noqa: PLC0415 - deliberately lazy
+    import scapy
 
     return getattr(scapy, "__version__", "unknown")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Datagram:
     """One transport-layer payload recovered from a capture.
 
@@ -79,7 +79,7 @@ class Datagram:
     src: tuple[str, int]
     dst: tuple[str, int]
     payload: bytes
-    tcp_seq: Optional[int] = None
+    tcp_seq: int | None = None
 
     @property
     def flow(self) -> tuple[str, tuple[str, int], tuple[str, int]]:
@@ -87,7 +87,7 @@ class Datagram:
         return (self.proto, self.src, self.dst)
 
 
-def _strip_padding(payload_bytes: bytes, declared_length: Optional[int]) -> bytes:
+def _strip_padding(payload_bytes: bytes, declared_length: int | None) -> bytes:
     """Trim link-layer padding using the length declared by the IP/UDP header.
 
     Short UDP packets get padded to the 60-byte Ethernet minimum; without this
@@ -100,7 +100,7 @@ def _strip_padding(payload_bytes: bytes, declared_length: Optional[int]) -> byte
     return payload_bytes[:declared_length]
 
 
-def _endpoints(packet, layers: SimpleNamespace) -> Optional[tuple[str, str, int]]:
+def _endpoints(packet, layers: SimpleNamespace) -> tuple[str, str, int] | None:
     """Return ``(src_ip, dst_ip, ip_payload_length)`` or ``None`` if not IP."""
     if packet.haslayer(layers.IP):
         ip = packet.getlayer(layers.IP)
@@ -245,7 +245,7 @@ class PcapWriter:
     def close(self) -> None:
         self._writer.close()
 
-    def __enter__(self) -> "PcapWriter":
+    def __enter__(self) -> PcapWriter:
         return self
 
     def __exit__(self, _exc_type, _exc, _tb) -> None:

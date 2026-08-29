@@ -9,13 +9,13 @@ recorded packets unchanged, at the intervals they were recorded with.
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
 import secrets
 import socket
 import socketserver
 import threading
 import time
-from typing import Optional
 
 from . import rtp
 from .replay_source import ReplaySource, ReplayTrack, TimelineEntry
@@ -36,10 +36,11 @@ SERVER_NAME = "vcam-replay"
 SESSION_TIMEOUT = 60
 #: Give the reader a moment to finish PLAY bookkeeping before the first packet.
 START_DELAY = 0.05
+#: How long a reader's socket blocks in ``recv`` before the handler re-checks
+#: whether the server is stopping. This is what makes shutdown prompt.
+READ_TIMEOUT = 0.5
 
-PUBLIC_METHODS = (
-    "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER, SET_PARAMETER"
-)
+PUBLIC_METHODS = "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER, SET_PARAMETER"
 
 _REASONS = {
     200: "OK",
@@ -65,7 +66,7 @@ class _Transport:
 
 
 class _InterleavedTransport(_Transport):
-    def __init__(self, connection: "_Connection", channel: int) -> None:
+    def __init__(self, connection: _Connection, channel: int) -> None:
         self._connection = connection
         self.channel = channel
 
@@ -94,7 +95,7 @@ class _UdpTransport(_Transport):
 class _Player(threading.Thread):
     """Streams the capture timeline to one reader's transports."""
 
-    def __init__(self, connection: "_Connection") -> None:
+    def __init__(self, connection: _Connection) -> None:
         super().__init__(name="vcam-replay-player", daemon=True)
         self._connection = connection
         self._server = connection.server
@@ -156,13 +157,13 @@ class _Player(threading.Thread):
 class _Connection:
     """Per-reader session state for one accepted TCP connection."""
 
-    def __init__(self, sock: socket.socket, server: "ReplayServer", peer: str) -> None:
+    def __init__(self, sock: socket.socket, server: ReplayServer, peer: str) -> None:
         self.socket = sock
         self.server = server
         self.peer = peer
-        self.session_id: Optional[str] = None
+        self.session_id: str | None = None
         self.transports: dict[int, _Transport] = {}
-        self.player: Optional[_Player] = None
+        self.player: _Player | None = None
         self._write_lock = threading.Lock()
 
     def send_raw(self, data: bytes) -> None:
@@ -172,7 +173,7 @@ class _Connection:
             except OSError:
                 self.stop_player()
 
-    def transport_for(self, track_index: int) -> Optional[_Transport]:
+    def transport_for(self, track_index: int) -> _Transport | None:
         return self.transports.get(track_index)
 
     def start_player(self) -> None:
@@ -191,20 +192,37 @@ class _Connection:
             transport.close()
         self.transports.clear()
 
+    def disconnect(self) -> None:
+        """Release everything *and* unblock the handler thread.
+
+        Closing the transports is not enough: the handler is parked in ``recv``
+        on this socket, and until that returns it never runs its cleanup or
+        re-checks whether the server is stopping.
+        """
+        self.close()
+        with contextlib.suppress(OSError):
+            self.socket.shutdown(socket.SHUT_RDWR)
+
 
 class _RtspHandler(socketserver.BaseRequestHandler):
+    server: _ThreadedRtspServer
+
     def handle(self) -> None:
-        server: ReplayServer = self.server.replay  # type: ignore[attr-defined]
+        server: ReplayServer = self.server.replay
         peer = f"{self.client_address[0]}:{self.client_address[1]}"
         connection = _Connection(self.request, server, peer)
         parser = RtspStreamParser()
         logger.info("replay: reader connected from %s", peer)
 
+        # Without a timeout `recv` blocks forever and the loop condition below
+        # is only tested when the reader happens to speak.
+        self.request.settimeout(READ_TIMEOUT)
+        server.register(connection)
         try:
             while not server.stopping:
                 try:
                     chunk = self.request.recv(4096)
-                except (TimeoutError, socket.timeout):
+                except TimeoutError:
                     continue
                 except OSError:
                     break
@@ -224,6 +242,7 @@ class _RtspHandler(socketserver.BaseRequestHandler):
                     if not keep_open:
                         return
         finally:
+            server.unregister(connection)
             connection.close()
             logger.info("replay: reader disconnected from %s", peer)
 
@@ -231,7 +250,10 @@ class _RtspHandler(socketserver.BaseRequestHandler):
 class _ThreadedRtspServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
-    timeout = 0.5
+
+    #: Set by the owning server so handlers can reach it. Declared here rather
+    #: than smuggled on at runtime, which cost two `type: ignore`s.
+    replay: ReplayServer
 
 
 class ReplayServer:
@@ -244,8 +266,8 @@ class ReplayServer:
         host: str = "0.0.0.0",
         port: int = 8554,
         path: str = "replay",
-        username: Optional[str] = None,
-        password: Optional[str] = None,
+        username: str | None = None,
+        password: str | None = None,
         loop: bool = True,
         speed: float = 1.0,
         rewrite_on_loop: bool = True,
@@ -265,25 +287,39 @@ class ReplayServer:
         self.loop = loop
         self.speed = speed
         self.rewrite_on_loop = rewrite_on_loop
-        self.stopping = False
+        self._stopping = threading.Event()
+        self._connections: set[_Connection] = set()
+        self._connections_lock = threading.Lock()
 
         self._credentials = (
-            base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+            base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
             if username is not None
             else None
         )
         self.loop_steps = self._plan_loop_steps()
         self._server = _ThreadedRtspServer((host, port), _RtspHandler)
-        self._server.replay = self  # type: ignore[attr-defined]
-        self._thread: Optional[threading.Thread] = None
+        self._server.replay = self
+        self._thread: threading.Thread | None = None
 
     # -- lifecycle -----------------------------------------------------------
+
+    @property
+    def stopping(self) -> bool:
+        return self._stopping.is_set()
+
+    def register(self, connection: _Connection) -> None:
+        with self._connections_lock:
+            self._connections.add(connection)
+
+    def unregister(self, connection: _Connection) -> None:
+        with self._connections_lock:
+            self._connections.discard(connection)
 
     @property
     def port(self) -> int:
         return int(self._server.server_address[1])
 
-    def rtsp_url(self, host: Optional[str] = None) -> str:
+    def rtsp_url(self, host: str | None = None) -> str:
         display = host or ("127.0.0.1" if self.host in ("0.0.0.0", "::", "") else self.host)
         return f"rtsp://{display}:{self.port}/{self.path}"
 
@@ -292,7 +328,10 @@ class ReplayServer:
         if self._thread is not None:
             return
         self._thread = threading.Thread(
-            target=self._server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True
+            target=self._server.serve_forever,
+            kwargs={"poll_interval": 0.2},
+            name="vcam-replay-server",
+            daemon=True,
         )
         self._thread.start()
 
@@ -300,14 +339,24 @@ class ReplayServer:
         self._server.serve_forever(poll_interval=0.2)
 
     def shutdown(self) -> None:
-        self.stopping = True
+        """Stop serving and drop every reader before returning.
+
+        ``server_close`` only closes the listening socket, so without the
+        explicit disconnect below an attached reader would keep receiving RTP
+        from its player thread long after this method returned.
+        """
+        self._stopping.set()
         self._server.shutdown()
         self._server.server_close()
+        with self._connections_lock:
+            connections = list(self._connections)
+        for connection in connections:
+            connection.disconnect()
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
 
-    def __enter__(self) -> "ReplayServer":
+    def __enter__(self) -> ReplayServer:
         self.start()
         return self
 
@@ -354,9 +403,7 @@ class ReplayServer:
 
     # -- request handling ----------------------------------------------------
 
-    def handle_message(
-        self, connection: _Connection, message: RtspMessage
-    ) -> tuple[bytes, bool]:
+    def handle_message(self, connection: _Connection, message: RtspMessage) -> tuple[bytes, bool]:
         """Return ``(response_bytes, keep_connection_open)``."""
         if not message.is_request:
             return b"", True
@@ -415,7 +462,7 @@ class ReplayServer:
             headers["Session"] = f"{connection.session_id};timeout={SESSION_TIMEOUT}"
         return headers
 
-    def _matches_path(self, uri: Optional[str]) -> bool:
+    def _matches_path(self, uri: str | None) -> bool:
         if not uri or not self.path:
             return True
         target = uri.split("?", 1)[0].split("#", 1)[0].rstrip("/")
@@ -442,7 +489,7 @@ class ReplayServer:
         }
         return build_response(200, _REASONS[200], headers, body), True
 
-    def _track_for(self, uri: Optional[str]) -> Optional[ReplayTrack]:
+    def _track_for(self, uri: str | None) -> ReplayTrack | None:
         if not uri:
             return None
         for track in self.source.tracks:
@@ -467,9 +514,7 @@ class ReplayServer:
 
         if "TCP" in specifier or interleaved is not None or "interleaved" in transport:
             channels = interleaved or (track.index * 2, track.index * 2 + 1)
-            connection.transports[track.index] = _InterleavedTransport(
-                connection, channels[0]
-            )
+            connection.transports[track.index] = _InterleavedTransport(connection, channels[0])
             reply = f"RTP/AVP/TCP;unicast;interleaved={channels[0]}-{channels[1]}"
         else:
             client_ports = parse_port_pair(transport.get("client_port", ""))
@@ -494,9 +539,7 @@ class ReplayServer:
         headers = self._base_headers(connection, cseq) | {"Transport": reply}
         return build_response(200, _REASONS[200], headers), True
 
-    def _play(
-        self, connection: _Connection, message: RtspMessage, cseq: str
-    ) -> tuple[bytes, bool]:
+    def _play(self, connection: _Connection, message: RtspMessage, cseq: str) -> tuple[bytes, bool]:
         del message
         if not connection.transports:
             return self._error(455, cseq), True
@@ -551,4 +594,4 @@ class ReplayServer:
         return build_response(200, _REASONS[200], self._base_headers(connection, cseq)), True
 
 
-__all__ = ["ReplayServer", "Pacer"]
+__all__ = ["Pacer", "ReplayServer"]

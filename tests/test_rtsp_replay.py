@@ -9,23 +9,23 @@ from __future__ import annotations
 import base64
 import socket
 import struct
+import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, Optional
 
 import pytest
 
+from captures import rtp_series, write_interleaved_capture, write_udp_capture
 from vcam import replay_source, rtp
 from vcam.rtsp_messages import InterleavedFrame, RtspMessage, RtspStreamParser
 from vcam.rtsp_replay import ReplayServer
-
-from captures import rtp_series, write_interleaved_capture, write_udp_capture
 
 
 class RtspClient:
     """A small blocking RTSP client: enough to exercise the whole state machine."""
 
-    def __init__(self, host: str, port: int, path: str, credentials: Optional[str] = None) -> None:
+    def __init__(self, host: str, port: int, path: str, credentials: str | None = None) -> None:
         self.url = f"rtsp://{host}:{port}/{path}"
         self.socket = socket.create_connection((host, port), timeout=5)
         self.socket.settimeout(5)
@@ -33,14 +33,14 @@ class RtspClient:
         self._pending: list[object] = []
         self._cseq = 0
         self._credentials = credentials
-        self.session: Optional[str] = None
+        self.session: str | None = None
 
     def close(self) -> None:
         self.socket.close()
 
     # -- protocol ------------------------------------------------------------
 
-    def request(self, method: str, uri: Optional[str] = None, **headers: str) -> RtspMessage:
+    def request(self, method: str, uri: str | None = None, **headers: str) -> RtspMessage:
         self._cseq += 1
         lines = [f"{method} {uri or self.url} RTSP/1.0", f"CSeq: {self._cseq}"]
         if self.session:
@@ -108,7 +108,7 @@ def _drain_udp(sock: socket.socket, count: int, timeout: float = 5.0) -> list[by
     while len(packets) < count and time.monotonic() < deadline:
         try:
             packets.append(sock.recv(65536))
-        except socket.timeout:
+        except TimeoutError:
             continue
     return packets
 
@@ -180,9 +180,7 @@ def test_setup_without_a_usable_transport_is_461(udp_capture, server_factory) ->
     server = server_factory(path)
     client = RtspClient("127.0.0.1", server.port, "replay")
     try:
-        response = client.request(
-            "SETUP", f"{client.url}/trackID=0", Transport="RTP/AVP;unicast"
-        )
+        response = client.request("SETUP", f"{client.url}/trackID=0", Transport="RTP/AVP;unicast")
         assert response.status == 461
     finally:
         client.close()
@@ -280,9 +278,7 @@ def test_no_rewrite_on_loop_replays_the_raw_rewind(tmp_path: Path, server_factor
     assert received == packets * 2
 
 
-def test_pause_is_refused_rather_than_silently_rewinding(
-    tmp_path: Path, server_factory
-) -> None:
+def test_pause_is_refused_rather_than_silently_rewinding(tmp_path: Path, server_factory) -> None:
     """Resuming would restart the timeline with backwards RTP counters."""
     path = tmp_path / "tcp.pcap"
     packets = write_interleaved_capture(path, packets=rtp_series(200), interval=0.002)
@@ -383,9 +379,7 @@ def test_loop_steps_are_not_planned_when_they_cannot_be_used(udp_capture) -> Non
 
     assert ReplayServer(source, host="127.0.0.1", port=0, loop=False).loop_steps == []
     assert (
-        ReplayServer(
-            source, host="127.0.0.1", port=0, loop=True, rewrite_on_loop=False
-        ).loop_steps
+        ReplayServer(source, host="127.0.0.1", port=0, loop=True, rewrite_on_loop=False).loop_steps
         == []
     )
     assert ReplayServer(source, host="127.0.0.1", port=0, loop=True).loop_steps
@@ -419,12 +413,10 @@ def test_a_path_is_matched_by_segment_not_substring(udp_capture, server_factory)
     server = server_factory(path)
     client = RtspClient("127.0.0.1", server.port, "replay")
     try:
-        assert client.request(
-            "DESCRIBE", f"rtsp://127.0.0.1:{server.port}/replayXYZ"
-        ).status == 404
-        assert client.request(
-            "DESCRIBE", f"rtsp://127.0.0.1:{server.port}/replay?tcp=1"
-        ).status == 200
+        assert client.request("DESCRIBE", f"rtsp://127.0.0.1:{server.port}/replayXYZ").status == 404
+        assert (
+            client.request("DESCRIBE", f"rtsp://127.0.0.1:{server.port}/replay?tcp=1").status == 200
+        )
     finally:
         client.close()
 
@@ -496,3 +488,46 @@ def test_interleaved_frames_are_well_formed(tmp_path: Path, server_factory) -> N
     assert raw[1] == 4
     assert struct.unpack("!H", raw[2:4])[0] == len(packets[0])
     assert raw[4 : 4 + len(packets[0])] == packets[0]
+
+
+def test_shutdown_drops_a_playing_reader(tmp_path: Path) -> None:
+    """`shutdown()` must mean it, even for a reader that never speaks again.
+
+    The handler thread parks in `recv` and the player thread streams from a
+    separate deadline loop, so neither notices a closed listening socket. Both
+    are daemons, which makes a leak invisible until something long-lived holds
+    a server.
+    """
+    path = tmp_path / "tcp.pcap"
+    write_interleaved_capture(path, packets=rtp_series(200), interval=0.005)
+    server = ReplayServer(replay_source.load(path), host="127.0.0.1", port=0, path="replay")
+    server.start()
+
+    client = RtspClient("127.0.0.1", server.port, "replay")
+    try:
+        client.request("SETUP", f"{client.url}/trackID=0", Transport="RTP/AVP/TCP;interleaved=0-1")
+        client.request("PLAY")
+        time.sleep(0.1)
+
+        server.shutdown()
+
+        client.socket.settimeout(2)
+        drained = 0
+        while True:
+            chunk = client.socket.recv(65536)
+            if not chunk:
+                break  # the server hung up, which is the point
+            drained += len(chunk)
+            assert drained < 1_000_000, "server is still streaming after shutdown"
+    finally:
+        client.close()
+
+    assert not [thread for thread in threading.enumerate() if thread.name.startswith("vcam-replay")]
+
+
+def test_shutdown_is_safe_without_any_readers(udp_capture) -> None:
+    path, _ = udp_capture
+    server = ReplayServer(replay_source.load(path), host="127.0.0.1", port=0, path="replay")
+    server.start()
+    server.shutdown()
+    server.shutdown()  # idempotent: the CLI calls it from a `finally` after Ctrl-C

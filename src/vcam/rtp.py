@@ -8,7 +8,6 @@ captured fault reproducible, so it is copied through byte for byte.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 RTP_VERSION = 2
 RTP_HEADER_LENGTH = 12
@@ -33,7 +32,7 @@ STATIC_CLOCK_RATES = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RtpHeader:
     payload_type: int
     marker: bool
@@ -52,7 +51,7 @@ def is_rtcp(data: bytes) -> bool:
     return (data[1] & 0x7F) in _RTCP_PAYLOAD_TYPES
 
 
-def parse(data: bytes) -> Optional[RtpHeader]:
+def parse(data: bytes) -> RtpHeader | None:
     """Parse the RTP fixed header, or return ``None`` if *data* is not RTP.
 
     Returning ``None`` instead of raising keeps the heuristic flow detector

@@ -17,9 +17,9 @@ import bisect
 import logging
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
 
 from . import rtp, sdp
 from .pcap import Datagram, PcapError, iter_datagrams
@@ -53,7 +53,7 @@ class ReplaySourceError(RuntimeError):
     """Raised when a capture cannot be turned into a replayable session."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RtpRecord:
     ts: float
     data: bytes
@@ -111,7 +111,7 @@ class ReplayTrack:
         return f"trackID={self.index}"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TimelineEntry:
     offset: float
     """Seconds since the first packet of the capture."""
@@ -238,12 +238,12 @@ class StreamClock:
 class _Handshake:
     """What the recorded RTSP exchange told us about the session."""
 
-    sdp_text: Optional[str] = None
-    server: Optional[Endpoint] = None
-    client: Optional[Endpoint] = None
+    sdp_text: str | None = None
+    server: Endpoint | None = None
+    client: Endpoint | None = None
     interleaved: dict[str, int] = field(default_factory=dict)
     """Control URL → RTP channel."""
-    udp_ports: dict[str, tuple[Optional[int], Optional[int]]] = field(default_factory=dict)
+    udp_ports: dict[str, tuple[int | None, int | None]] = field(default_factory=dict)
     """Control URL → (server RTP port, client RTP port)."""
     setup_order: list[str] = field(default_factory=list)
     credentials_seen: bool = False
@@ -255,13 +255,11 @@ def _collect_tcp_streams(datagrams: Iterable[Datagram]) -> dict[FlowKey, TcpStre
         if datagram.proto != "tcp" or datagram.tcp_seq is None:
             continue
         key = (datagram.src, datagram.dst)
-        streams.setdefault(key, TcpStream()).add(
-            datagram.tcp_seq, datagram.payload, datagram.ts
-        )
+        streams.setdefault(key, TcpStream()).add(datagram.tcp_seq, datagram.payload, datagram.ts)
     return streams
 
 
-def _find_rtsp_flow(streams: dict[FlowKey, TcpStream]) -> Optional[FlowKey]:
+def _find_rtsp_flow(streams: dict[FlowKey, TcpStream]) -> FlowKey | None:
     """Return the client→server flow of the first RTSP session in the capture."""
     for key, stream in streams.items():
         head = stream.head(4096)
@@ -321,7 +319,7 @@ def _analyse_handshake(
     return handshake
 
 
-def _match_control(control_url: str, tracks: list[ReplayTrack]) -> Optional[int]:
+def _match_control(control_url: str, tracks: list[ReplayTrack]) -> int | None:
     """Map a ``SETUP`` request URI onto the media block it set up."""
     for track in tracks:
         control = track.media.control
@@ -381,7 +379,7 @@ def _check_capture_size(capture: Path) -> None:
 def load(
     path: Path | str,
     *,
-    sdp_override: Optional[Path] = None,
+    sdp_override: Path | None = None,
 ) -> ReplaySource:
     """Build a :class:`ReplaySource` from the capture at *path*."""
     capture = Path(path).expanduser()
@@ -402,8 +400,7 @@ def load(
 
     description = _load_description(handshake, sdp_override, warnings)
     tracks = [
-        ReplayTrack(index=index, media=media)
-        for index, media in enumerate(description.media)
+        ReplayTrack(index=index, media=media) for index, media in enumerate(description.media)
     ]
 
     if tracks:
@@ -463,11 +460,7 @@ def _read_handshake(
 
     client, server = client_flow
     request_data, _ = streams[client_flow].assemble()
-    requests = [
-        item
-        for item in _parse_stream(request_data)
-        if isinstance(item, RtspMessage)
-    ]
+    requests = [item for item in _parse_stream(request_data) if isinstance(item, RtspMessage)]
 
     server_flow = (server, client)
     responses: dict[int, RtspMessage] = {}
@@ -490,7 +483,7 @@ def _read_handshake(
 
 def _load_description(
     handshake: _Handshake,
-    sdp_override: Optional[Path],
+    sdp_override: Path | None,
     warnings: list[str],
 ) -> sdp.SessionDescription:
     if sdp_override is not None:
@@ -547,7 +540,7 @@ def _fill_tracks(
 def _heuristic_tracks(
     datagrams: list[Datagram],
     warnings: list[str],
-    preferred: Optional[sdp.SessionDescription] = None,
+    preferred: sdp.SessionDescription | None = None,
 ) -> tuple[list[ReplayTrack], sdp.SessionDescription]:
     """Group plausible RTP by (flow, SSRC) when the handshake is unavailable.
 
@@ -581,8 +574,8 @@ def _heuristic_tracks(
     for index, packets in enumerate(ordered):
         header = rtp.parse(packets[0].payload)
         assert header is not None
-        media = supplied[index] if index < len(supplied) else sdp.synthetic_media(
-            header.payload_type
+        media = (
+            supplied[index] if index < len(supplied) else sdp.synthetic_media(header.payload_type)
         )
         description.media.append(media)
         track = ReplayTrack(index=index, media=media)
@@ -596,9 +589,7 @@ def _heuristic_tracks(
 def _build_timeline(tracks: list[ReplayTrack]) -> tuple[list[TimelineEntry], float]:
     """Merge every track into one capture-ordered playback timeline."""
     merged: list[tuple[float, int, bytes]] = [
-        (record.ts, track.index, record.data)
-        for track in tracks
-        for record in track.packets
+        (record.ts, track.index, record.data) for track in tracks for record in track.packets
     ]
     if not merged:
         return [], 0.0
@@ -606,8 +597,7 @@ def _build_timeline(tracks: list[ReplayTrack]) -> tuple[list[TimelineEntry], flo
     merged.sort(key=lambda item: item[0])
     start = merged[0][0]
     timeline = [
-        TimelineEntry(offset=ts - start, track_index=index, data=data)
-        for ts, index, data in merged
+        TimelineEntry(offset=ts - start, track_index=index, data=data) for ts, index, data in merged
     ]
     return timeline, timeline[-1].offset
 
