@@ -192,17 +192,25 @@ class _Connection:
         self.player.start()
 
     def stop_player(self) -> None:
+        # Deliberately *not* cleared before the join. close() is reached from
+        # the handler's cleanup and from shutdown() at the same time; when this
+        # claimed the player up front, the first caller joined it and the second
+        # saw None and returned at once, so shutdown() could hand back control
+        # while the player was still unwinding. Both callers must wait.
         player = self.player
         if player is None:
             return
-        self.player = None
         player.stop()
+        # The player reaches us through send_raw() on a dead socket by way of
+        # end_of_stream(), and a thread cannot join itself. It is on its way out
+        # regardless, so leave self.player for whoever is not the player.
+        if player is threading.current_thread():
+            return
         # Signalling the pacer only asks the player to stop; joining is what
         # makes "the server has stopped streaming" true by the time we return.
-        # The player reaches us through send_raw() on a dead socket, and a
-        # thread cannot join itself.
-        if player is not threading.current_thread():
-            player.join(timeout=PLAYER_JOIN_TIMEOUT)
+        player.join(timeout=PLAYER_JOIN_TIMEOUT)
+        if self.player is player:
+            self.player = None
 
     def close(self) -> None:
         self.stop_player()

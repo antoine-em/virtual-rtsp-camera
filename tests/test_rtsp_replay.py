@@ -525,6 +525,63 @@ def test_shutdown_drops_a_playing_reader(tmp_path: Path) -> None:
     assert not [thread for thread in threading.enumerate() if thread.name.startswith("vcam-replay")]
 
 
+def test_shutdown_waits_even_when_another_thread_closed_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second caller into close() must wait for the player too.
+
+    ``close()`` is reached from the handler's cleanup and from ``shutdown()``
+    at the same time. ``stop_player`` used to claim the player before joining
+    it, so whichever caller arrived second saw ``None`` and returned at once --
+    and ``shutdown()`` handed back control while RTP was still in flight. On a
+    laptop the loser of that race finished quickly enough to hide it; macOS CI
+    failed on it.
+
+    The player's unwind is slowed here so the race is decided by the code under
+    test rather than by scheduling luck.
+    """
+    from vcam import rtsp_replay
+
+    original_run = rtsp_replay._Player.run
+
+    def slow_run(self: rtsp_replay._Player) -> None:
+        try:
+            original_run(self)
+        finally:
+            time.sleep(0.4)
+
+    monkeypatch.setattr(rtsp_replay._Player, "run", slow_run)
+
+    path = tmp_path / "race.pcap"
+    write_interleaved_capture(path, packets=rtp_series(400), interval=0.005)
+    server = ReplayServer(replay_source.load(path), host="127.0.0.1", port=0, path="replay")
+    server.start()
+
+    client = RtspClient("127.0.0.1", server.port, "replay")
+    try:
+        client.request("SETUP", f"{client.url}/trackID=0", Transport="RTP/AVP/TCP;interleaved=0-1")
+        client.request("PLAY")
+        time.sleep(0.15)
+
+        connection = next(iter(server._connections))
+        rival = threading.Thread(target=connection.close, name="rival-closer")
+        rival.start()
+        time.sleep(0.02)  # let the rival claim the player first
+
+        server.shutdown()
+        # Sampled before joining the rival on purpose: the rival waits for the
+        # player itself, so joining it first would mask exactly the bug this
+        # covers. The contract is that *shutdown* leaves nothing streaming.
+        alive_at_shutdown = [
+            thread.name for thread in threading.enumerate() if thread.name.startswith("vcam-replay")
+        ]
+        rival.join(timeout=5)
+    finally:
+        client.close()
+
+    assert not alive_at_shutdown, f"shutdown() returned with {alive_at_shutdown} still running"
+
+
 def test_shutdown_is_safe_without_any_readers(udp_capture) -> None:
     path, _ = udp_capture
     server = ReplayServer(replay_source.load(path), host="127.0.0.1", port=0, path="replay")
