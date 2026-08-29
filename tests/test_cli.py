@@ -37,9 +37,27 @@ def test_help() -> None:
 
 
 def test_version() -> None:
+    """The reported version must be the real one, not merely present.
+
+    This used to assert only that the word "vcam" appeared, so it stayed green
+    while `__version__` sat two releases behind pyproject.toml.
+    """
+    from importlib.metadata import version as distribution_version
+
     result = invoke("--version")
     assert result.exit_code == 0
-    assert "vcam" in result.output
+    assert result.output.strip() == f"vcam {distribution_version('vcam')}"
+
+
+def test_the_packaged_version_is_the_one_in_pyproject() -> None:
+    """Guards against going back to a hand-maintained copy of the version."""
+    tomllib = pytest.importorskip("tomllib")  # 3.11+; the check is enough there
+
+    from vcam import __version__
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+    assert __version__ == declared
 
 
 # ---------------------------------------------------------------------------

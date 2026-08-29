@@ -29,7 +29,37 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
--
+- `vcam replay` serves a captured RTSP/RTP session back byte for byte, over
+  interleaved TCP or UDP, preserving the original payloads and inter-packet
+  timing. Captures are recorded with `tcpdump`; see the README for the workflow.
+
+### Changed
+
+- The capture size limit is now 256 MB, down from 512 MB. Loading a capture
+  costs about 6x the file size in memory at roughly 15 MB/s, so the old limit
+  quietly allowed a ~3 GB resident set. The refusal message states the memory a
+  load would need.
+
+### Fixed
+
+- `vcam --version` reported the wrong version. It was hardcoded in
+  `vcam/__init__.py` and had drifted two releases behind `pyproject.toml`; it is
+  now read from the installed distribution.
+- `ReplayServer.shutdown()` could return while a reader was still being sent
+  RTP. Two separate races: callers of `stop_player` after the first returned
+  without waiting, and a connection was unregistered before it was closed, so
+  shutdown could not see it.
+- A capture played with `--no-loop` never hung up when it ran out, leaving
+  clients waiting on a silent connection.
+- The MediaMTX API port preflight probed `0.0.0.0` while MediaMTX binds
+  `127.0.0.1`, so a taken port looked free and startup failed later with a
+  message blaming the RTSP port.
+
+### Security
+
+- Container security updates were being served from a stale build cache, so
+  `apt-get upgrade` had frozen at the packages current when the cache was
+  written. The layer is now keyed on the build date and refreshes daily.
 
 ---
 
