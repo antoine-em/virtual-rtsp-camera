@@ -83,6 +83,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Pin today's apt snapshot
+        id: apt
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push konekuto/vcam:main
         uses: docker/build-push-action@v7
         with:
@@ -91,6 +95,8 @@ jobs:
           push: true
           pull: true
           tags: konekuto/vcam:main
+          build-args: |
+            APT_SNAPSHOT=${{ steps.apt.outputs.date }}
           labels: |
             org.opencontainers.image.title=vcam
             org.opencontainers.image.description=Virtual RTSP camera CLI — serve looping video files as multiplexed RTSP feeds
@@ -109,6 +115,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Pin today's apt snapshot
+        id: apt
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Build image (cache-only, no push)
         uses: docker/build-push-action@v7
         with:
@@ -117,6 +127,8 @@ jobs:
           pull: true
           load: true
           tags: vcam:ci
+          build-args: |
+            APT_SNAPSHOT=${{ steps.apt.outputs.date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
