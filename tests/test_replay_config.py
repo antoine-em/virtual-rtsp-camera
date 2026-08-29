@@ -200,9 +200,7 @@ def test_replay_env_is_empty_without_auth(capture_file: Path) -> None:
     assert build_replay_env(_stack(capture_file)) == {}
 
 
-def test_prepare_creates_a_managed_process_per_replay(
-    capture_file: Path, tmp_path: Path
-) -> None:
+def test_prepare_creates_a_managed_process_per_replay(capture_file: Path, tmp_path: Path) -> None:
     supervisor = Supervisor(
         _stack(capture_file), mediamtx_binary=tmp_path / "mediamtx", work_dir=tmp_path / "work"
     )
@@ -221,7 +219,7 @@ def test_prepare_reports_a_missing_capture(tmp_path: Path) -> None:
     supervisor = Supervisor(
         stack, mediamtx_binary=tmp_path / "mediamtx", work_dir=tmp_path / "work"
     )
-    with pytest.raises(SupervisorError, match="absent.pcap"):
+    with pytest.raises(SupervisorError, match=r"absent\.pcap"):
         supervisor.prepare()
 
 

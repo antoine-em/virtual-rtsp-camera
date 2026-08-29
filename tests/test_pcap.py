@@ -7,9 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from vcam.pcap import Datagram, PcapError, PcapWriter, backend_version, iter_datagrams
-
 from captures import CLIENT, CLIENT_RTP, SERVER, SERVER_RTP, rtp_packet
+from vcam.pcap import Datagram, PcapError, PcapWriter, backend_version, iter_datagrams
 
 
 def test_backend_version_is_reported() -> None:

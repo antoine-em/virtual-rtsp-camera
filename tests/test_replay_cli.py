@@ -7,10 +7,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from captures import rtp_series, write_udp_capture
 from vcam.cli import app
 from vcam.supervisor import REPLAY_PASSWORD_ENV
-
-from captures import rtp_series, write_udp_capture
 
 runner = CliRunner()
 

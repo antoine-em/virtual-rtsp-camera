@@ -16,7 +16,6 @@ from vcam.mediamtx import (
 )
 from vcam.models import AuthSpec, CameraSpec, CameraStack, ServerSpec
 
-
 # ---------------------------------------------------------------------------
 # instance planning
 # ---------------------------------------------------------------------------
@@ -60,7 +59,7 @@ def test_instances_get_distinct_api_and_udp_ports(video_file: Path) -> None:
     assert len(set(api_ports)) == 3
     assert len(set(rtp_ports)) == 3
     # UDP blocks must not overlap: MediaMTX binds 8 consecutive ports.
-    for first, second in zip(sorted(rtp_ports), sorted(rtp_ports)[1:]):
+    for first, second in zip(sorted(rtp_ports), sorted(rtp_ports)[1:], strict=False):
         assert second - first >= UDP_BLOCK_SIZE
 
 

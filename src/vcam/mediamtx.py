@@ -5,7 +5,7 @@ from __future__ import annotations
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -26,7 +26,7 @@ class ServerInstance:
     api_port: int
     rtp_port: int = 8000
     cameras: list[CameraSpec] = field(default_factory=list)
-    config_path: Optional[Path] = None
+    config_path: Path | None = None
 
     @property
     def label(self) -> str:

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
-from typing import Optional
 
 from vcam.pcap import PcapWriter
 
@@ -70,9 +69,7 @@ def rtp_series(
 
 
 def _request(method: str, uri: str, cseq: int, extra: str = "") -> bytes:
-    return (
-        f"{method} {uri} RTSP/1.0\r\nCSeq: {cseq}\r\n{extra}\r\n".encode()
-    )
+    return f"{method} {uri} RTSP/1.0\r\nCSeq: {cseq}\r\n{extra}\r\n".encode()
 
 
 def _response(cseq: int, extra: str = "", body: bytes = b"") -> bytes:
@@ -107,7 +104,7 @@ class _TcpSide:
 def write_udp_capture(
     path: Path,
     *,
-    packets: Optional[list[bytes]] = None,
+    packets: list[bytes] | None = None,
     interval: float = 0.04,
     start: float = 1_700_000_000.0,
     with_handshake: bool = True,
@@ -123,7 +120,9 @@ def write_udp_capture(
             client.emit(writer, _request("OPTIONS", "rtsp://cam/stream", 1), ts)
             server.emit(writer, _response(1, "Public: DESCRIBE, SETUP, PLAY\r\n"), ts)
             client.emit(
-                writer, _request("DESCRIBE", "rtsp://cam/stream", 2, "Accept: application/sdp\r\n"), ts
+                writer,
+                _request("DESCRIBE", "rtsp://cam/stream", 2, "Accept: application/sdp\r\n"),
+                ts,
             )
             server.emit(
                 writer,
@@ -136,7 +135,8 @@ def write_udp_capture(
                     "SETUP",
                     "rtsp://cam/stream/trackID=0",
                     3,
-                    f"Transport: RTP/AVP;unicast;client_port={CLIENT_RTP[1]}-{CLIENT_RTP[1] + 1}\r\n",
+                    "Transport: RTP/AVP;unicast;"
+                    f"client_port={CLIENT_RTP[1]}-{CLIENT_RTP[1] + 1}\r\n",
                 ),
                 ts,
             )
@@ -157,19 +157,17 @@ def write_udp_capture(
             server.emit(writer, _response(4, "Session: 12345678\r\n"), ts)
 
         for index, packet in enumerate(packets):
-            writer.write_udp(
-                packet, start + index * interval, src=SERVER_RTP, dst=CLIENT_RTP
-            )
+            writer.write_udp(packet, start + index * interval, src=SERVER_RTP, dst=CLIENT_RTP)
     return packets
 
 
 def write_interleaved_capture(
     path: Path,
     *,
-    packets: Optional[list[bytes]] = None,
+    packets: list[bytes] | None = None,
     interval: float = 0.04,
     start: float = 1_700_000_000.0,
-    retransmit_index: Optional[int] = None,
+    retransmit_index: int | None = None,
 ) -> list[bytes]:
     """RTSP over TCP with RTP interleaved on channel 0.
 

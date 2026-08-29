@@ -10,7 +10,6 @@ URLs — are rewritten to point at our own server.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 from .rtp import STATIC_CLOCK_RATES
 
@@ -39,7 +38,7 @@ class MediaDescription:
         return [int(token) for token in parts[3:] if token.isdigit()]
 
     @property
-    def control(self) -> Optional[str]:
+    def control(self) -> str | None:
         for line in self.lines:
             if line.startswith("a=control:"):
                 return line[len("a=control:") :].strip()
@@ -58,9 +57,7 @@ class MediaDescription:
     def preserved_lines(self) -> list[str]:
         """Every line worth copying verbatim into the served description."""
         return [
-            line
-            for line in self.lines
-            if line and not line.startswith(_REWRITTEN_MEDIA_PREFIXES)
+            line for line in self.lines if line and not line.startswith(_REWRITTEN_MEDIA_PREFIXES)
         ]
 
 
@@ -80,7 +77,7 @@ class SessionDescription:
 def parse(text: str) -> SessionDescription:
     """Parse an SDP document into its session part and its media blocks."""
     description = SessionDescription()
-    current: Optional[MediaDescription] = None
+    current: MediaDescription | None = None
     for raw in text.replace("\r\n", "\n").split("\n"):
         line = raw.strip()
         if not line:
@@ -116,7 +113,7 @@ def render(
     *,
     session_name: str = "vcam replay",
     connection_address: str = "0.0.0.0",
-    duration: Optional[float] = None,
+    duration: float | None = None,
 ) -> str:
     """Render a description for serving, with our own origin and control URLs."""
     lines = [

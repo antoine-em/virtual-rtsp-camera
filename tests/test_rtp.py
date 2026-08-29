@@ -6,9 +6,8 @@ import struct
 
 import pytest
 
-from vcam import rtp
-
 from captures import rtp_packet
+from vcam import rtp
 
 
 def test_parse_reads_the_fixed_header() -> None:

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from vcam import sdp
-
 from captures import SDP_TEXT
+from vcam import sdp
 
 MULTI_TRACK = (
     "v=0\r\n"
@@ -47,9 +46,7 @@ def test_clock_rate_comes_from_rtpmap_then_the_static_table() -> None:
 def test_render_preserves_fmtp_verbatim() -> None:
     """fmtp carries the parameter sets; losing it changes what the decoder sees."""
     rendered = sdp.render(sdp.parse(MULTI_TRACK))
-    assert (
-        "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0LgHtoCgPRA,aM48gA==" in rendered
-    )
+    assert "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0LgHtoCgPRA,aM48gA==" in rendered
     assert "a=rtpmap:96 H264/90000" in rendered
 
 

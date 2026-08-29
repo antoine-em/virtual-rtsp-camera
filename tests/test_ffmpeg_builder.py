@@ -100,9 +100,7 @@ def test_start_offset_seeks_after_input(video_file: Path, h264_info: MediaInfo) 
     assert index_of(cmd, "-ss") > index_of(cmd, "-i")
 
 
-def test_start_offset_bursts_past_the_skipped_head(
-    video_file: Path, h264_info: MediaInfo
-) -> None:
+def test_start_offset_bursts_past_the_skipped_head(video_file: Path, h264_info: MediaInfo) -> None:
     """Without the burst, -re would pace the discarded head in real time."""
     camera = CameraSpec(name="cam1", source=video_file, start_offset=12)
     cmd = build_publish_command(camera, URL, info=h264_info)
@@ -111,24 +109,14 @@ def test_start_offset_bursts_past_the_skipped_head(
     assert index_of(cmd, "-readrate_initial_burst") < index_of(cmd, "-i")
 
 
-def test_burst_is_omitted_without_realtime(
-    video_file: Path, h264_info: MediaInfo
-) -> None:
-    camera = CameraSpec(
-        name="cam1", source=video_file, start_offset=12, realtime=False
-    )
-    assert "-readrate_initial_burst" not in build_publish_command(
-        camera, URL, info=h264_info
-    )
+def test_burst_is_omitted_without_realtime(video_file: Path, h264_info: MediaInfo) -> None:
+    camera = CameraSpec(name="cam1", source=video_file, start_offset=12, realtime=False)
+    assert "-readrate_initial_burst" not in build_publish_command(camera, URL, info=h264_info)
 
 
-def test_burst_is_omitted_without_offset(
-    video_file: Path, h264_info: MediaInfo
-) -> None:
+def test_burst_is_omitted_without_offset(video_file: Path, h264_info: MediaInfo) -> None:
     camera = CameraSpec(name="cam1", source=video_file)
-    assert "-readrate_initial_burst" not in build_publish_command(
-        camera, URL, info=h264_info
-    )
+    assert "-readrate_initial_burst" not in build_publish_command(camera, URL, info=h264_info)
 
 
 def test_zero_offset_omits_seek(video_file: Path, h264_info: MediaInfo) -> None:

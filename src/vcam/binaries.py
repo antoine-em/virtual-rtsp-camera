@@ -10,8 +10,8 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -80,13 +80,13 @@ def _is_rosetta() -> bool:
     return result.stdout.decode(errors="replace").strip() == "1"
 
 
-def asset_name(version: str = DEFAULT_VERSION, slug: Optional[str] = None) -> str:
+def asset_name(version: str = DEFAULT_VERSION, slug: str | None = None) -> str:
     resolved = slug or platform_slug()
     extension = "zip" if resolved.startswith("windows") else "tar.gz"
     return f"mediamtx_{version}_{resolved}.{extension}"
 
 
-def asset_url(version: str = DEFAULT_VERSION, slug: Optional[str] = None) -> str:
+def asset_url(version: str = DEFAULT_VERSION, slug: str | None = None) -> str:
     return f"{RELEASE_BASE}/{version}/{asset_name(version, slug)}"
 
 
@@ -94,17 +94,17 @@ def checksums_url(version: str = DEFAULT_VERSION) -> str:
     return f"{RELEASE_BASE}/{version}/checksums.sha256"
 
 
-def install_path(version: str = DEFAULT_VERSION, slug: Optional[str] = None) -> Path:
+def install_path(version: str = DEFAULT_VERSION, slug: str | None = None) -> Path:
     binary = "mediamtx.exe" if platform.system() == "Windows" else "mediamtx"
     return cache_dir() / "mediamtx" / version / (slug or platform_slug()) / binary
 
 
 def resolve_binary(
-    explicit: Optional[Path] = None,
+    explicit: Path | None = None,
     *,
     version: str = DEFAULT_VERSION,
     allow_download: bool = True,
-    on_event: Optional[Callable[[str], None]] = None,
+    on_event: Callable[[str], None] | None = None,
 ) -> Path:
     """Find a usable MediaMTX binary, downloading it as a last resort.
 
@@ -147,9 +147,9 @@ def resolve_binary(
 def download(
     *,
     version: str = DEFAULT_VERSION,
-    destination: Optional[Path] = None,
+    destination: Path | None = None,
     verify: bool = True,
-    on_event: Optional[Callable[[str], None]] = None,
+    on_event: Callable[[str], None] | None = None,
 ) -> Path:
     """Download and extract the MediaMTX release binary. Returns its path."""
     notify = on_event or (lambda _message: None)
@@ -192,7 +192,7 @@ def _fetch(url: str, destination: Path) -> None:
         raise BinaryError(f"failed to download {url}: {exc}") from exc
 
 
-def _expected_checksum(version: str, name: str) -> Optional[str]:
+def _expected_checksum(version: str, name: str) -> str | None:
     try:
         with urlopen(checksums_url(version), timeout=60) as response:
             payload = response.read().decode("utf-8", errors="replace")

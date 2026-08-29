@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from vcam.ffmpeg import (
     DEGRADED_BITRATE,
@@ -51,9 +52,7 @@ def test_simulation_defaults_to_normal(video_file: Path) -> None:
     assert camera.simulation.is_temporal is False
 
 
-def test_normal_leaves_a_passthrough_feed_untouched(
-    video_file: Path, h264_info: MediaInfo
-) -> None:
+def test_normal_leaves_a_passthrough_feed_untouched(video_file: Path, h264_info: MediaInfo) -> None:
     camera = CameraSpec(name="cam1", source=video_file)
     cmd = build_publish_command(camera, URL, info=h264_info)
 
@@ -90,9 +89,7 @@ def test_noise_is_bitrate_capped(video_file: Path, h264_info: MediaInfo) -> None
     assert cmd[index_of(cmd, "-maxrate") + 1] == NOISE_BITRATE
 
 
-def test_noise_cap_yields_to_an_explicit_bitrate(
-    video_file: Path, h264_info: MediaInfo
-) -> None:
+def test_noise_cap_yields_to_an_explicit_bitrate(video_file: Path, h264_info: MediaInfo) -> None:
     camera = CameraSpec(
         name="cam1",
         source=video_file,
@@ -110,9 +107,7 @@ def test_noise_level_is_applied(video_file: Path, h264_info: MediaInfo) -> None:
     )
 
 
-def test_blackout_pins_luma_and_neutral_chroma(
-    video_file: Path, h264_info: MediaInfo
-) -> None:
+def test_blackout_pins_luma_and_neutral_chroma(video_file: Path, h264_info: MediaInfo) -> None:
     """lutyuv, so an RGB-decoding source is blanked rather than tinted."""
     camera = camera_with(video_file, mode="blackout")
     assert filters_of(build_publish_command(camera, URL, info=h264_info)) == (
@@ -137,9 +132,7 @@ def test_degraded_starves_the_bitstream(video_file: Path, h264_info: MediaInfo) 
     assert "-vf" not in cmd
 
 
-def test_degraded_keeps_explicit_video_settings(
-    video_file: Path, h264_info: MediaInfo
-) -> None:
+def test_degraded_keeps_explicit_video_settings(video_file: Path, h264_info: MediaInfo) -> None:
     """The preset only fills gaps; a bitrate the user asked for still wins."""
     camera = CameraSpec(
         name="cam1",
@@ -174,9 +167,7 @@ def test_extra_filters_are_appended(video_file: Path, h264_info: MediaInfo) -> N
     )
 
 
-def test_extra_filters_alone_force_transcode(
-    video_file: Path, h264_info: MediaInfo
-) -> None:
+def test_extra_filters_alone_force_transcode(video_file: Path, h264_info: MediaInfo) -> None:
     camera = camera_with(video_file, filters="hue=s=0")
     cmd = build_publish_command(camera, URL, info=h264_info)
 
@@ -190,9 +181,7 @@ def test_extra_filters_alone_force_transcode(
 
 
 @pytest.mark.parametrize("mode", ["flaky", "stutter"])
-def test_temporal_modes_carry_interval_and_duration(
-    video_file: Path, mode: str
-) -> None:
+def test_temporal_modes_carry_interval_and_duration(video_file: Path, mode: str) -> None:
     camera = camera_with(video_file, mode=mode)
     assert camera.simulation.is_temporal is True
 
@@ -207,9 +196,7 @@ def test_flaky_publishes_normally(video_file: Path, h264_info: MediaInfo) -> Non
     assert "-vf" not in cmd
 
 
-def test_stutter_freezes_inside_one_filter_graph(
-    video_file: Path, h264_info: MediaInfo
-) -> None:
+def test_stutter_freezes_inside_one_filter_graph(video_file: Path, h264_info: MediaInfo) -> None:
     """One publisher, no swap: swapping would stall attached readers."""
     camera = camera_with(video_file, mode="stutter", interval=12, duration=6)
     cmd = build_publish_command(camera, URL, info=h264_info)
@@ -218,9 +205,7 @@ def test_stutter_freezes_inside_one_filter_graph(
     assert filters_of(cmd) == "select='lt(mod(t,18),12)',fps=30"
 
 
-def test_stutter_refill_rate_follows_the_camera(
-    video_file: Path, h264_info: MediaInfo
-) -> None:
+def test_stutter_refill_rate_follows_the_camera(video_file: Path, h264_info: MediaInfo) -> None:
     camera = CameraSpec(
         name="cam1",
         source=video_file,
@@ -262,7 +247,7 @@ def test_frozen_joins_quickly(video_file: Path, h264_info: MediaInfo) -> None:
     ],
 )
 def test_invalid_simulation_is_rejected(video_file: Path, payload: dict) -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         CameraSpec(name="cam1", source=video_file, simulation=payload)  # type: ignore[arg-type]
 
 

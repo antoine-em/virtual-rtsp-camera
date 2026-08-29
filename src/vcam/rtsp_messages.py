@@ -8,8 +8,8 @@ framing lives here and is tested once.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator, Optional, Union
 
 INTERLEAVED_MAGIC = 0x24  # b"$"
 INTERLEAVED_HEADER_LENGTH = 4
@@ -45,20 +45,20 @@ class RtspMessage:
         return not self.start_line.startswith("RTSP/")
 
     @property
-    def method(self) -> Optional[str]:
+    def method(self) -> str | None:
         if not self.is_request:
             return None
         return self.start_line.split(" ", 1)[0].upper()
 
     @property
-    def uri(self) -> Optional[str]:
+    def uri(self) -> str | None:
         if not self.is_request:
             return None
         parts = self.start_line.split(" ")
         return parts[1] if len(parts) > 1 else None
 
     @property
-    def status(self) -> Optional[int]:
+    def status(self) -> int | None:
         if self.is_request:
             return None
         parts = self.start_line.split(" ")
@@ -67,12 +67,12 @@ class RtspMessage:
         return int(parts[1])
 
     @property
-    def cseq(self) -> Optional[int]:
+    def cseq(self) -> int | None:
         raw = self.headers.get("cseq", "").strip()
         return int(raw) if raw.isdigit() else None
 
 
-StreamItem = Union[RtspMessage, InterleavedFrame]
+StreamItem = RtspMessage | InterleavedFrame
 
 
 def parse_headers(block: str) -> tuple[str, dict[str, str]]:
@@ -112,7 +112,7 @@ class RtspStreamParser:
         """Bytes buffered but not yet forming a complete item."""
         return len(self._buffer)
 
-    def _next_item(self) -> tuple[Optional[StreamItem], int]:
+    def _next_item(self) -> tuple[StreamItem | None, int]:
         buffer = self._buffer
         if not buffer:
             return None, 0
@@ -209,7 +209,7 @@ def parse_transport(value: str) -> dict[str, str]:
     return parameters
 
 
-def parse_port_pair(value: str) -> Optional[tuple[int, int]]:
+def parse_port_pair(value: str) -> tuple[int, int] | None:
     """Parse ``a-b`` (or a bare ``a``) as used by ``client_port``/``interleaved``."""
     text = value.strip()
     if not text:

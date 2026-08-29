@@ -6,13 +6,12 @@ import plistlib
 import subprocess
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner
 
-from vcam.cli import app
 from vcam import service as svc
+from vcam.cli import app
 from vcam.service import ServiceError, ServiceStatus
 
 runner = CliRunner()
@@ -65,6 +64,7 @@ def test_vcam_command_prefers_path(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_vcam_command_falls_back_to_module(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("vcam.service.shutil.which", lambda _: None)
     import sys
+
     cmd = svc.vcam_command()
     assert cmd[0] == sys.executable
     assert cmd[1:] == ["-m", "vcam"]
@@ -149,7 +149,9 @@ def test_systemd_unit_path_respects_xdg(monkeypatch: pytest.MonkeyPatch, tmp_pat
 def test_systemd_unit_path_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    assert svc.systemd_unit_path("vcam") == tmp_path / ".config" / "systemd" / "user" / "vcam.service"
+    assert (
+        svc.systemd_unit_path("vcam") == tmp_path / ".config" / "systemd" / "user" / "vcam.service"
+    )
 
 
 def test_launchd_paths_use_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -245,7 +247,7 @@ def test_install_launchd_writes_plist_and_loads(
     assert str(config.resolve()) in payload["ProgramArguments"]
 
     # bootstrap or load should have been called
-    assert any(a[0] == "launchctl" and "bootstrap" in a or "load" in a for a in calls)
+    assert any((a[0] == "launchctl" and "bootstrap" in a) or "load" in a for a in calls)
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +256,7 @@ def test_install_launchd_writes_plist_and_loads(
 
 
 def test_status_systemd_active(fake_systemd: Any) -> None:
-    base, calls = fake_systemd
+    base, _calls = fake_systemd
     # Create the unit file so it's "installed"
     unit_path = base / "cfg" / "systemd" / "user" / "vcam.service"
     unit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,6 +265,7 @@ def test_status_systemd_active(fake_systemd: Any) -> None:
     responses = iter([_ok("active\n"), _ok("enabled\n")])
 
     import vcam.service as svc_mod
+
     svc_mod._run = lambda argv, *, check=True, capture=True: next(responses)  # type: ignore
 
     result = svc.status("vcam")
@@ -279,12 +282,13 @@ def test_status_systemd_not_installed(fake_systemd: Any) -> None:
 
 
 def test_status_launchd_running(fake_launchd: Any, tmp_path: Path) -> None:
-    base, calls = fake_launchd
+    base, _calls = fake_launchd
     plist = base / "Library" / "LaunchAgents" / "vcam.plist"
     plist.parent.mkdir(parents=True, exist_ok=True)
     plist.write_bytes(b"<plist/>")
 
     import vcam.service as svc_mod
+
     svc_mod._run = lambda argv, *, check=True, capture=True: _ok("1234\t0\tvcam\n")  # type: ignore
 
     result = svc.status("vcam")
@@ -313,9 +317,12 @@ def test_stop_systemd_calls_systemctl(fake_systemd: Any, tmp_path: Path) -> None
     assert ["systemctl", "--user", "stop", "vcam.service"] in calls
 
 
-def test_stop_systemd_not_installed_raises(fake_systemd: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stop_systemd_not_installed_raises(
+    fake_systemd: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Unit file doesn't exist; make systemctl stop fail so the path-check runs.
     import vcam.service as svc_mod
+
     svc_mod._run = lambda argv, *, check=True, capture=True: _err("not loaded", returncode=5)  # type: ignore
     with pytest.raises(ServiceError, match="not installed"):
         svc.stop("vcam")
@@ -378,9 +385,7 @@ def test_service_install_unsupported_platform(
 ) -> None:
     monkeypatch.setattr("vcam.service.platform.system", lambda: "Windows")
     config = tmp_path / "cameras.yaml"
-    config.write_text(
-        f"cameras: [{{name: cam1, source: {video_file}}}]", encoding="utf-8"
-    )
+    config.write_text(f"cameras: [{{name: cam1, source: {video_file}}}]", encoding="utf-8")
     result = invoke("service", "install", "--config", str(config))
     assert result.exit_code == 1
     assert "not supported" in result.output
@@ -412,7 +417,9 @@ def test_service_status_cli_active(
 
 def test_service_stop_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     stopped = []
-    monkeypatch.setattr("vcam.service.stop", lambda name: stopped.append(name) or "stopped vcam.service")
+    monkeypatch.setattr(
+        "vcam.service.stop", lambda name: stopped.append(name) or "stopped vcam.service"
+    )
     result = invoke("service", "stop")
     assert result.exit_code == 0
     assert stopped == ["vcam"]
@@ -420,7 +427,9 @@ def test_service_stop_cli(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_service_uninstall_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     removed = []
-    monkeypatch.setattr("vcam.service.uninstall", lambda name: removed.append(name) or "removed /path")
+    monkeypatch.setattr(
+        "vcam.service.uninstall", lambda name: removed.append(name) or "removed /path"
+    )
     result = invoke("service", "uninstall")
     assert result.exit_code == 0
     assert removed == ["vcam"]
@@ -437,9 +446,7 @@ def test_service_install_cli_success(
     monkeypatch.setattr("vcam.service._run", lambda argv, **kw: _ok())
 
     config = tmp_path / "cameras.yaml"
-    config.write_text(
-        f"cameras: [{{name: cam1, source: {video_file}}}]", encoding="utf-8"
-    )
+    config.write_text(f"cameras: [{{name: cam1, source: {video_file}}}]", encoding="utf-8")
     result = invoke("service", "install", "--config", str(config))
     assert result.exit_code == 0
     assert "installed" in result.output

@@ -64,12 +64,8 @@ def test_prepare_rejects_missing_sources(fake_binary: Path, tmp_path: Path) -> N
         supervisor.prepare()
 
 
-def test_prepare_rejects_empty_stack(
-    video_file: Path, fake_binary: Path, tmp_path: Path
-) -> None:
-    stack = CameraStack(
-        cameras=[CameraSpec(name="a", source=video_file, enabled=False)]
-    )
+def test_prepare_rejects_empty_stack(video_file: Path, fake_binary: Path, tmp_path: Path) -> None:
+    stack = CameraStack(cameras=[CameraSpec(name="a", source=video_file, enabled=False)])
     supervisor = make_supervisor(stack, fake_binary, tmp_path)
 
     with pytest.raises(SupervisorError, match="no enabled cameras"):

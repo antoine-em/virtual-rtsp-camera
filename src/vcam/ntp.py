@@ -17,7 +17,6 @@ import socket
 import struct
 import time
 from pathlib import Path
-from typing import Optional
 
 #: Seconds between the NTP epoch (1 Jan 1900) and the Unix epoch (1 Jan 1970).
 _NTP_DELTA = 2_208_988_800
@@ -89,7 +88,7 @@ def measure_offset(
     msg = b"\x1b" + 47 * b"\x00"  # NTPv3 client request (LI=0, VN=3, Mode=3)
     best_rtt = float("inf")
     best_offset = 0.0
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
 
     for _ in range(samples):
         try:
@@ -158,33 +157,33 @@ def _clock_settime_step(offset_seconds: float) -> None:
 def _adjtimex_slew(offset_seconds: float) -> None:
     """Slew ``CLOCK_REALTIME`` by *offset_seconds* via ``adjtimex(ADJ_SETOFFSET)``."""
     _ADJ_SETOFFSET = 0x0100  # apply a one-time offset
-    _ADJ_NANO = 0x2000       # offset field is in nanoseconds
+    _ADJ_NANO = 0x2000  # offset field is in nanoseconds
 
     # struct timex layout for 64-bit Linux (from <sys/timex.h>)
     class _Timex(ctypes.Structure):
         _fields_ = [
-            ("modes",     ctypes.c_uint),
-            ("offset",    ctypes.c_long),
-            ("freq",      ctypes.c_long),
-            ("maxerror",  ctypes.c_long),
-            ("esterror",  ctypes.c_long),
-            ("status",    ctypes.c_int),
-            ("constant",  ctypes.c_long),
+            ("modes", ctypes.c_uint),
+            ("offset", ctypes.c_long),
+            ("freq", ctypes.c_long),
+            ("maxerror", ctypes.c_long),
+            ("esterror", ctypes.c_long),
+            ("status", ctypes.c_int),
+            ("constant", ctypes.c_long),
             ("precision", ctypes.c_long),
             ("tolerance", ctypes.c_long),
-            ("time_sec",  ctypes.c_long),
+            ("time_sec", ctypes.c_long),
             ("time_usec", ctypes.c_long),
-            ("tick",      ctypes.c_long),
-            ("ppsfreq",   ctypes.c_long),
-            ("jitter",    ctypes.c_long),
-            ("shift",     ctypes.c_int),
-            ("stabil",    ctypes.c_long),
-            ("jitcnt",    ctypes.c_long),
-            ("calcnt",    ctypes.c_long),
-            ("errcnt",    ctypes.c_long),
-            ("stbcnt",    ctypes.c_long),
-            ("tai",       ctypes.c_int),
-            ("_pad",      ctypes.c_int * 11),
+            ("tick", ctypes.c_long),
+            ("ppsfreq", ctypes.c_long),
+            ("jitter", ctypes.c_long),
+            ("shift", ctypes.c_int),
+            ("stabil", ctypes.c_long),
+            ("jitcnt", ctypes.c_long),
+            ("calcnt", ctypes.c_long),
+            ("errcnt", ctypes.c_long),
+            ("stbcnt", ctypes.c_long),
+            ("tai", ctypes.c_int),
+            ("_pad", ctypes.c_int * 11),
         ]
 
     offset_ns = int(offset_seconds * 1_000_000_000)

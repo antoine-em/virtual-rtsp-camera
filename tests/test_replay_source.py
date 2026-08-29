@@ -6,15 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from vcam import replay_source
-from vcam.pcap import PcapWriter
-from vcam.replay_source import (
-    MAX_CAPTURE_BYTES_ENV,
-    ReplaySourceError,
-    StreamClock,
-    TcpStream,
-)
-
 from captures import (
     CLIENT_RTP,
     SDP_TEXT,
@@ -24,7 +15,14 @@ from captures import (
     write_interleaved_capture,
     write_udp_capture,
 )
-
+from vcam import replay_source
+from vcam.pcap import PcapWriter
+from vcam.replay_source import (
+    MAX_CAPTURE_BYTES_ENV,
+    ReplaySourceError,
+    StreamClock,
+    TcpStream,
+)
 
 # -- TCP reassembly ---------------------------------------------------------
 
@@ -298,9 +296,7 @@ def test_head_of_an_empty_stream_is_empty() -> None:
     assert TcpStream().head(16) == b""
 
 
-def test_an_oversized_capture_is_refused_with_a_way_out(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_an_oversized_capture_is_refused_with_a_way_out(tmp_path: Path, monkeypatch) -> None:
     """A clear refusal beats an OOM kill with no diagnostic."""
     path = tmp_path / "huge.pcap"
     write_udp_capture(path)

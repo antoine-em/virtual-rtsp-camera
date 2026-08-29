@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -10,9 +11,10 @@ import socket
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -46,29 +48,29 @@ class ManagedProcess:
     name: str
     command: list[str]
     kind: str  # "server" or "publisher"
-    env: Optional[dict[str, str]] = None
+    env: dict[str, str] | None = None
     """Extra environment for the child, merged over the supervisor's own.
 
     Used for secrets: argv is world-readable through /proc/<pid>/cmdline.
     """
-    process: Optional[subprocess.Popen] = None
+    process: subprocess.Popen | None = None
     restarts: int = 0
     consecutive_failures: int = 0
-    started_at: Optional[float] = None
-    last_exit_code: Optional[int] = None
+    started_at: float | None = None
+    last_exit_code: int | None = None
     retry_at: float = 0.0
     gave_up: bool = False
     suspended: bool = False
     """When set, the monitor leaves this process alone: a simulation scheduler
     owns its stop/start cycle, so stops are planned rather than failures."""
-    _reader: Optional[threading.Thread] = field(default=None, repr=False)
+    _reader: threading.Thread | None = field(default=None, repr=False)
 
     @property
     def running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
     @property
-    def pid(self) -> Optional[int]:
+    def pid(self) -> int | None:
         return self.process.pid if self.process is not None else None
 
     def start(self) -> bool:
@@ -92,9 +94,7 @@ class ManagedProcess:
             return False
 
         self.started_at = time.monotonic()
-        self._reader = threading.Thread(
-            target=self._pump_output, args=(self.process,), daemon=True
-        )
+        self._reader = threading.Thread(target=self._pump_output, args=(self.process,), daemon=True)
         self._reader.start()
         logger.info("%s: started (pid %s)", self.name, self.process.pid)
         return True
@@ -112,7 +112,7 @@ class ManagedProcess:
     def backoff(self) -> float:
         return min(BACKOFF_BASE * (2 ** max(self.consecutive_failures - 1, 0)), BACKOFF_MAX)
 
-    def note_exit(self, code: int, *, planned: bool = False) -> None:
+    def note_exit(self, code: int | None, *, planned: bool = False) -> None:
         uptime = time.monotonic() - self.started_at if self.started_at else 0.0
         self.last_exit_code = code
         self.process = None
@@ -149,13 +149,13 @@ class CameraRuntime:
     camera: CameraSpec
     instance: ServerInstance
     mode: StreamMode
-    info: Optional[MediaInfo]
+    info: MediaInfo | None
     read_url: str
     """Credential-free URL, safe for logs and the health file."""
     read_url_with_credentials: str
     """URL a reader can use directly; carries credentials when auth is enabled."""
     process: ManagedProcess
-    scheduler: Optional["SimulationScheduler"] = None
+    scheduler: SimulationScheduler | None = None
     """Drives the dropout cycle of a flaky camera, None otherwise."""
 
 
@@ -231,7 +231,7 @@ class SimulationScheduler:
     tears the path's stream down and leaves attached readers stalled for good.
     """
 
-    def __init__(self, runtime: "CameraRuntime", spec: "SimulationSpec", now: float) -> None:
+    def __init__(self, runtime: CameraRuntime, spec: SimulationSpec, now: float) -> None:
         self.runtime = runtime
         self.spec = spec
         self.state = "up"  # "up" | "event"
@@ -280,10 +280,10 @@ class Supervisor:
         ffmpeg: str = "ffmpeg",
         ffprobe: str = "ffprobe",
         ffmpeg_log_level: str = "warning",
-        health_file: Optional[Path] = None,
+        health_file: Path | None = None,
         verify: bool = True,
-        max_restarts: Optional[int] = None,
-        on_ready: Optional[Callable[[list[CameraRuntime]], None]] = None,
+        max_restarts: int | None = None,
+        on_ready: Callable[[list[CameraRuntime]], None] | None = None,
     ) -> None:
         self.stack = stack
         self.mediamtx_binary = mediamtx_binary
@@ -310,11 +310,9 @@ class Supervisor:
             self._stop.set()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
+            # Not on the main thread (e.g. under a test runner); skip.
+            with contextlib.suppress(ValueError):
                 signal.signal(sig, handler)
-            except ValueError:
-                # Not on the main thread (e.g. under a test runner); skip.
-                pass
 
     def prepare(self) -> None:
         """Validate sources, plan instances and render server configs."""
@@ -326,9 +324,8 @@ class Supervisor:
         missing = [camera for camera in cameras if not camera.source.is_file()]
         missing_captures = [replay for replay in replays if not replay.source.is_file()]
         if missing or missing_captures:
-            details = "\n".join(
-                f"  - {item.name}: {item.source}" for item in [*missing, *missing_captures]
-            )
+            unresolved: list[CameraSpec | ReplaySpec] = [*missing, *missing_captures]
+            details = "\n".join(f"  - {item.name}: {item.source}" for item in unresolved)
             raise SupervisorError(f"source file(s) not found:\n{details}")
 
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -366,9 +363,7 @@ class Supervisor:
                     info=info,
                     read_url=self.stack.read_url(camera, with_credentials=False),
                     read_url_with_credentials=self.stack.read_url(camera),
-                    process=ManagedProcess(
-                        name=camera.name, kind="publisher", command=command
-                    ),
+                    process=ManagedProcess(name=camera.name, kind="publisher", command=command),
                 )
                 if camera.simulation.mode is SimulationMode.FLAKY:
                     runtime.scheduler = SimulationScheduler(
@@ -454,10 +449,7 @@ class Supervisor:
                     continue
                 if now < process.retry_at:
                     continue
-                if (
-                    self.max_restarts is not None
-                    and process.restarts >= self.max_restarts
-                ):
+                if self.max_restarts is not None and process.restarts >= self.max_restarts:
                     if not process.gave_up:
                         process.gave_up = True
                         logger.error(

@@ -32,11 +32,11 @@ from scapy.layers.inet import UDP, IP
 from scapy.layers.rtp import RTP
 
 with PcapWriter("capture.pcap", append=False, sync=True) as w:
-    w.write(pkt)          # any Scapy packet, timestamp preserved
+    w.write(pkt)  # any Scapy packet, timestamp preserved
 
 for pkt in PcapReader("capture.pcap"):
-    ts  = float(pkt.time)
-    raw = bytes(pkt[UDP].payload)   # raw RTP bytes
+    ts = float(pkt.time)
+    raw = bytes(pkt[UDP].payload)  # raw RTP bytes
 ```
 
 **Pros:** no C extension needed, works identically on macOS/aarch64, supports pcapng, good RTP dissector built-in.  
@@ -56,7 +56,7 @@ with open("capture.pcap", "wb") as f:
 with open("capture.pcap", "rb") as f:
     for ts, buf in dpkt.pcap.Reader(f):
         eth = dpkt.ethernet.Ethernet(buf)
-        udp_payload = eth.data.data.data   # Ethernet→IP→UDP→payload
+        udp_payload = eth.data.data.data  # Ethernet→IP→UDP→payload
 ```
 
 **Pros:** extremely lightweight, zero dependencies, fast import.  
@@ -100,6 +100,7 @@ Python sender core:
 
 ```python
 import socket, time
+
 
 class RtpSender:
     def __init__(self, host: str, port: int):
@@ -164,6 +165,7 @@ Key structure in `proxy.py`:
 ```python
 import asyncio
 
+
 class RtspProxy:
     async def run(self, upstream_url: str, local_path: str, pcap_writer: PcapWriter):
         reader_up, writer_up = await asyncio.open_connection(upstream_host, upstream_port)
@@ -179,8 +181,8 @@ class RtspProxy:
                     pcap_writer.write_packet(chunk, time.time())
 
         await asyncio.gather(
-            forward(reader_up, writer_dn, tee=True),   # upstream → local (capture)
-            forward(reader_dn, writer_up),              # local → upstream (RTSP replies)
+            forward(reader_up, writer_dn, tee=True),  # upstream → local (capture)
+            forward(reader_dn, writer_up),  # local → upstream (RTSP replies)
         )
 ```
 

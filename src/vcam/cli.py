@@ -8,7 +8,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from pydantic import ValidationError
@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__, binaries
-from .ntp import NTPError, apply_offset, has_sys_time_cap, measure_offset, running_in_container
+from . import service as _service
 from .config import (
     ConfigError,
     dump_stack,
@@ -28,15 +28,14 @@ from .config import (
 )
 from .ffmpeg import build_publish_command, resolve_mode
 from .mediamtx import plan_instances, render_server_config_yaml
-from .pcap import PcapError, backend_version as pcap_backend_version
 from .models import (
-    AuthSpec,
     CAMERA_NAME_RE,
-    CameraSpec,
-    CameraStack,
     CREDENTIAL_CHARS,
     CREDENTIAL_RE,
     RTSP_PASSTHROUGH_CODECS,
+    AuthSpec,
+    CameraSpec,
+    CameraStack,
     ServerSpec,
     SimulationMode,
     SimulationSpec,
@@ -45,10 +44,13 @@ from .models import (
     VideoCodec,
     VideoSettings,
 )
-from .probe import ProbeError, probe as probe_source, try_probe
-from .supervisor import CameraRuntime, REPLAY_PASSWORD_ENV, Supervisor, SupervisorError
-from . import service as _service
+from .ntp import NTPError, apply_offset, has_sys_time_cap, measure_offset, running_in_container
+from .pcap import PcapError
+from .pcap import backend_version as pcap_backend_version
+from .probe import ProbeError, try_probe
+from .probe import probe as probe_source
 from .service import ServiceError
+from .supervisor import REPLAY_PASSWORD_ENV, CameraRuntime, Supervisor, SupervisorError
 
 console = Console()
 error_console = Console(stderr=True)
@@ -69,7 +71,7 @@ app = typer.Typer(
 # ---------------------------------------------------------------------------
 
 ConfigOption = Annotated[
-    Optional[Path],
+    Path | None,
     typer.Option(
         "--config",
         "-c",
@@ -77,16 +79,16 @@ ConfigOption = Annotated[
     ),
 ]
 HostOption = Annotated[
-    Optional[str],
+    str | None,
     typer.Option("--host", help="Bind address for the RTSP listener (default: 0.0.0.0)."),
 ]
 DisplayHostOption = Annotated[
-    Optional[str],
+    str | None,
     typer.Option("--host", help="Hostname or IP to print in the URLs (default: from config)."),
 ]
 
 
-def _fail(message: str, code: int = 1) -> "typer.Exit":
+def _fail(message: str, code: int = 1) -> typer.Exit:
     error_console.print(f"[bold red]error:[/] {message}")
     return typer.Exit(code)
 
@@ -116,13 +118,13 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def _video_overrides(
-    resolution: Optional[str],
-    fps: Optional[float],
-    bitrate: Optional[str],
-    codec: Optional[VideoCodec],
-    encoder: Optional[str],
-    gop: Optional[int],
-    preset: Optional[str],
+    resolution: str | None,
+    fps: float | None,
+    bitrate: str | None,
+    codec: VideoCodec | None,
+    encoder: str | None,
+    gop: int | None,
+    preset: str | None,
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     for key, value in (
@@ -140,11 +142,11 @@ def _video_overrides(
 
 
 def _simulation_overrides(
-    simulation: Optional[SimulationMode],
-    noise_level: Optional[int],
-    interval: Optional[float],
-    duration: Optional[float],
-    filters: Optional[str],
+    simulation: SimulationMode | None,
+    noise_level: int | None,
+    interval: float | None,
+    duration: float | None,
+    filters: str | None,
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     for key, value in (
@@ -177,34 +179,32 @@ def _slug(value: str) -> str:
     return cleaned.strip("-.") or "cam"
 
 
-def _load_stack_or_exit(config: Optional[Path]) -> CameraStack:
+def _load_stack_or_exit(config: Path | None) -> CameraStack:
     path = config or find_default_config()
     if path is None:
-        raise _fail(
-            "no config file found. Pass --config, or create one with `vcam init`."
-        )
+        raise _fail("no config file found. Pass --config, or create one with `vcam init`.")
     try:
         return load_stack(path)
     except ConfigError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
 
 
 def _apply_overrides(
     stack: CameraStack,
     *,
-    host: Optional[str],
-    port: Optional[int],
-    api_port: Optional[int],
-    log_level: Optional[str],
-    username: Optional[str],
-    password: Optional[str],
-    ntp_server: Optional[str],
-    mode: Optional[StreamMode],
-    loop: Optional[bool],
-    realtime: Optional[bool],
-    start_offset: Optional[float],
-    transport: Optional[Transport],
-    audio: Optional[bool],
+    host: str | None,
+    port: int | None,
+    api_port: int | None,
+    log_level: str | None,
+    username: str | None,
+    password: str | None,
+    ntp_server: str | None,
+    mode: StreamMode | None,
+    loop: bool | None,
+    realtime: bool | None,
+    start_offset: float | None,
+    transport: Transport | None,
+    audio: bool | None,
     video: dict[str, object],
     simulation: dict[str, object],
 ) -> None:
@@ -257,15 +257,15 @@ def _apply_overrides(
 def run(
     config: ConfigOption = None,
     source: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--source", "-s", help="Video file to serve as a single camera."),
     ] = None,
     name: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--name", "-n", help="Camera name for --source (default: file stem)."),
     ] = None,
     camera: Annotated[
-        Optional[list[str]],
+        list[str] | None,
         typer.Option(
             "--camera",
             help="Repeatable NAME=PATH pair, e.g. --camera cam1=videos/a.mp4.",
@@ -273,68 +273,70 @@ def run(
     ] = None,
     host: HostOption = None,
     port: Annotated[
-        Optional[int], typer.Option("--port", "-p", help="Shared RTSP port (default: 8554).")
+        int | None, typer.Option("--port", "-p", help="Shared RTSP port (default: 8554).")
     ] = None,
     api_port: Annotated[
-        Optional[int],
+        int | None,
         typer.Option("--api-port", help="MediaMTX HTTP API port, loopback only (default: 9997)."),
     ] = None,
     mode: Annotated[
-        Optional[StreamMode],
+        StreamMode | None,
         typer.Option(
             "--mode",
             help="auto: copy when the source is H.264/HEVC, else transcode.",
         ),
     ] = None,
     loop: Annotated[
-        Optional[bool], typer.Option("--loop/--no-loop", help="Loop the file forever (default: on).")
+        bool | None, typer.Option("--loop/--no-loop", help="Loop the file forever (default: on).")
     ] = None,
     realtime: Annotated[
-        Optional[bool],
+        bool | None,
         typer.Option(
             "--realtime/--no-realtime",
             help="Pace the file at native frame rate (default: on).",
         ),
     ] = None,
     start_offset: Annotated[
-        Optional[float],
+        float | None,
         typer.Option("--start-offset", help="Seek N seconds into the file (de-syncs feeds)."),
     ] = None,
     transport: Annotated[
-        Optional[Transport],
+        Transport | None,
         typer.Option("--transport", help="RTSP transport for publishing (default: tcp)."),
     ] = None,
     resolution: Annotated[
-        Optional[str], typer.Option("--resolution", help="Transcode target, e.g. 1280x720.")
+        str | None, typer.Option("--resolution", help="Transcode target, e.g. 1280x720.")
     ] = None,
-    fps: Annotated[Optional[float], typer.Option("--fps", help="Transcode target frame rate.")] = None,
+    fps: Annotated[float | None, typer.Option("--fps", help="Transcode target frame rate.")] = None,
     bitrate: Annotated[
-        Optional[str], typer.Option("--bitrate", help="Transcode target bitrate, e.g. 2M.")
+        str | None, typer.Option("--bitrate", help="Transcode target bitrate, e.g. 2M.")
     ] = None,
-    codec: Annotated[Optional[VideoCodec], typer.Option("--codec", help="Transcode codec.")] = None,
+    codec: Annotated[VideoCodec | None, typer.Option("--codec", help="Transcode codec.")] = None,
     encoder: Annotated[
-        Optional[str],
-        typer.Option("--encoder", help="Explicit ffmpeg encoder, e.g. h264_nvenc (overrides --codec)."),
+        str | None,
+        typer.Option(
+            "--encoder", help="Explicit ffmpeg encoder, e.g. h264_nvenc (overrides --codec)."
+        ),
     ] = None,
     gop: Annotated[
-        Optional[int], typer.Option("--gop", help="Keyframe interval in frames when transcoding.")
+        int | None, typer.Option("--gop", help="Keyframe interval in frames when transcoding.")
     ] = None,
     preset: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--preset", help="x264/x265 preset when transcoding (default: veryfast)."),
     ] = None,
     audio: Annotated[
-        Optional[bool], typer.Option("--audio/--no-audio", help="Publish audio (off by default).")
+        bool | None, typer.Option("--audio/--no-audio", help="Publish audio (off by default).")
     ] = None,
     simulation: Annotated[
-        Optional[SimulationMode],
+        SimulationMode | None,
         typer.Option(
             "--simulation",
             help="Simulate a camera fault: noise, degraded, frozen, blackout, flaky, stutter.",
         ),
     ] = None,
     noise_level: Annotated[
-        Optional[int],
+        int | None,
         typer.Option(
             "--simulation-noise-level",
             "--noise-level",
@@ -344,7 +346,7 @@ def run(
         ),
     ] = None,
     simulation_interval: Annotated[
-        Optional[float],
+        float | None,
         typer.Option(
             "--simulation-interval",
             min=0.1,
@@ -352,7 +354,7 @@ def run(
         ),
     ] = None,
     simulation_duration: Annotated[
-        Optional[float],
+        float | None,
         typer.Option(
             "--simulation-duration",
             min=0.1,
@@ -360,17 +362,17 @@ def run(
         ),
     ] = None,
     simulation_filters: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--simulation-filters", help="Extra ffmpeg filters, e.g. 'gblur=sigma=2'."),
     ] = None,
     username: Annotated[
-        Optional[str], typer.Option("--username", "-u", help="Require this user for readers.")
+        str | None, typer.Option("--username", "-u", help="Require this user for readers.")
     ] = None,
     password: Annotated[
-        Optional[str], typer.Option("--password", "-P", help="Password for --username.")
+        str | None, typer.Option("--password", "-P", help="Password for --username.")
     ] = None,
     log_level: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--server-log-level",
             help="MediaMTX log level: error, warn, info, debug (default: warn).",
@@ -380,15 +382,15 @@ def run(
         str, typer.Option("--ffmpeg-log-level", help="ffmpeg -loglevel value.")
     ] = "warning",
     health_file: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--health-file", help="Write a JSON health snapshot here every 5s."),
     ] = None,
     work_dir: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--work-dir", help="Keep generated MediaMTX configs in this directory."),
     ] = None,
     mediamtx_binary: Annotated[
-        Optional[Path], typer.Option("--mediamtx-binary", help="Use this MediaMTX binary.")
+        Path | None, typer.Option("--mediamtx-binary", help="Use this MediaMTX binary.")
     ] = None,
     mediamtx_version: Annotated[
         str, typer.Option("--mediamtx-version", help="Release to download when not installed.")
@@ -400,13 +402,13 @@ def run(
         bool, typer.Option("--verify/--no-verify", help="Wait until every path is publishing.")
     ] = True,
     max_restarts: Annotated[
-        Optional[int], typer.Option("--max-restarts", help="Give up after N restarts per process.")
+        int | None, typer.Option("--max-restarts", help="Give up after N restarts per process.")
     ] = None,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the plan and exit without starting anything.")
     ] = False,
     ntp_server: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--ntp-server",
             help=(
@@ -453,7 +455,7 @@ def run(
             ),
         )
     except ValidationError as exc:
-        raise _fail(f"invalid options:\n{format_validation_error(exc)}")
+        raise _fail(f"invalid options:\n{format_validation_error(exc)}") from exc
 
     if not stack.enabled_cameras:
         raise _fail("no enabled cameras to serve")
@@ -474,9 +476,9 @@ def run(
             on_event=lambda message: console.print(f"[dim]{message}[/]"),
         )
     except binaries.BinaryError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
 
-    temp_dir: Optional[str] = None
+    temp_dir: str | None = None
     if work_dir is None:
         temp_dir = tempfile.mkdtemp(prefix="vcam-")
         resolved_work_dir = Path(temp_dir)
@@ -498,7 +500,7 @@ def run(
         raise typer.Exit(supervisor.run())
     except SupervisorError as exc:
         supervisor.shutdown()
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
     except KeyboardInterrupt:
         supervisor.shutdown()
     finally:
@@ -508,17 +510,15 @@ def run(
 
 def _build_stack(
     *,
-    config: Optional[Path],
-    source: Optional[Path],
-    name: Optional[str],
-    cameras: Optional[list[str]],
+    config: Path | None,
+    source: Path | None,
+    name: str | None,
+    cameras: list[str] | None,
 ) -> CameraStack:
     inline: list[CameraSpec] = []
 
     if source is not None:
-        inline.append(
-            CameraSpec(name=name or _slug(source.stem), source=Path(source).expanduser())
-        )
+        inline.append(CameraSpec(name=name or _slug(source.stem), source=Path(source).expanduser()))
     for entry in cameras or []:
         camera_name, camera_source = _parse_camera_argument(entry)
         inline.append(CameraSpec(name=camera_name, source=camera_source))
@@ -530,12 +530,12 @@ def _build_stack(
         try:
             return CameraStack(cameras=inline)
         except ValidationError as exc:
-            raise _fail(f"invalid camera definition:\n{format_validation_error(exc)}")
+            raise _fail(f"invalid camera definition:\n{format_validation_error(exc)}") from exc
 
     return _load_stack_or_exit(config)
 
 
-def _run_ntp_sync(ntp_server: Optional[str]) -> None:
+def _run_ntp_sync(ntp_server: str | None) -> None:
     """Query *ntp_server* and apply the measured offset. Container-only."""
     if ntp_server is None:
         return
@@ -554,7 +554,7 @@ def _run_ntp_sync(ntp_server: Optional[str]) -> None:
     try:
         offset, rtt = measure_offset(ntp_server)
     except NTPError as exc:
-        raise _fail(f"NTP query to {ntp_server} failed: {exc}")
+        raise _fail(f"NTP query to {ntp_server} failed: {exc}") from exc
 
     sign = "+" if offset >= 0 else ""
     if not has_sys_time_cap():
@@ -569,7 +569,7 @@ def _run_ntp_sync(ntp_server: Optional[str]) -> None:
     try:
         apply_offset(offset)
     except OSError as exc:
-        raise _fail(f"Could not apply NTP offset: {exc}")
+        raise _fail(f"Could not apply NTP offset: {exc}") from exc
 
     action = "stepped" if abs(offset) > 0.128 else "slewed"
     logger.info(
@@ -635,7 +635,7 @@ def _print_ready(stack: CameraStack, runtimes: list[CameraRuntime]) -> None:
     console.print("[dim]press Ctrl-C to stop[/]")
 
 
-def _print_replay_table(stack: CameraStack, host: Optional[str] = None) -> None:
+def _print_replay_table(stack: CameraStack, host: str | None = None) -> None:
     if not stack.replays:
         return
     table = Table(title="Capture replays", title_justify="left")
@@ -665,7 +665,7 @@ def _simulation_label(camera: CameraSpec) -> str:
     return sim.mode.value
 
 
-def _print_camera_table(stack: CameraStack, host: Optional[str] = None) -> None:
+def _print_camera_table(stack: CameraStack, host: str | None = None) -> None:
     table = Table(title="Cameras", title_justify="left")
     table.add_column("camera", style="bold cyan")
     table.add_column("url")
@@ -696,7 +696,7 @@ def _print_camera_table(stack: CameraStack, host: Optional[str] = None) -> None:
 def init(
     path: Annotated[Path, typer.Argument(help="Config file to create.")] = Path("cameras.yaml"),
     source: Annotated[
-        Optional[list[Path]],
+        list[Path] | None,
         typer.Option("--source", "-s", help="Repeatable video file to seed the config with."),
     ] = None,
     force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
@@ -713,7 +713,7 @@ def init(
 def generate(
     path: Annotated[Path, typer.Argument(help="Config file to create.")] = Path("cameras.yaml"),
     scan: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--scan", "-d", help="Directory to scan for video files (default: cwd)."),
     ] = None,
     force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
@@ -736,11 +736,13 @@ def generate(
         p for p in scan_dir.iterdir() if p.is_file() and p.suffix.lower() in video_extensions
     )
 
-    console.print(f"\n[bold cyan]vcam generate[/] — interactive configuration wizard\n")
+    console.print("\n[bold cyan]vcam generate[/] — interactive configuration wizard\n")
 
     if not candidates:
         console.print(f"[yellow]No video files found in {scan_dir}.[/]")
-        console.print("Add video files there or pass [bold]--scan <dir>[/] to choose another directory.")
+        console.print(
+            "Add video files there or pass [bold]--scan <dir>[/] to choose another directory."
+        )
         raise typer.Exit(1)
 
     console.print(f"Found [bold]{len(candidates)}[/] video file(s) in [dim]{scan_dir}[/]:\n")
@@ -834,7 +836,7 @@ def generate(
         rtsp_port = 8554
 
     add_auth = typer.confirm("  Require authentication (username/password)?", default=False)
-    auth: Optional[AuthSpec] = None
+    auth: AuthSpec | None = None
     if add_auth:
         while True:
             username = typer.prompt("    Username")
@@ -870,7 +872,7 @@ def add(
     source: Annotated[Path, typer.Argument(help="Video file to add as a camera.")],
     config: ConfigOption = None,
     name: Annotated[
-        Optional[str], typer.Option("--name", "-n", help="Camera name (default: file stem).")
+        str | None, typer.Option("--name", "-n", help="Camera name (default: file stem).")
     ] = None,
     mode: Annotated[
         StreamMode,
@@ -891,32 +893,30 @@ def add(
         typer.Option("--start-offset", help="Seek N seconds into the file (de-syncs feeds)."),
     ] = 0.0,
     port: Annotated[
-        Optional[int],
+        int | None,
         typer.Option(
             "--port",
             help="Dedicated RTSP port for this camera (spawns its own server instance).",
         ),
     ] = None,
     resolution: Annotated[
-        Optional[str], typer.Option("--resolution", help="Transcode target, e.g. 1280x720.")
+        str | None, typer.Option("--resolution", help="Transcode target, e.g. 1280x720.")
     ] = None,
-    fps: Annotated[
-        Optional[float], typer.Option("--fps", help="Transcode target frame rate.")
-    ] = None,
+    fps: Annotated[float | None, typer.Option("--fps", help="Transcode target frame rate.")] = None,
     bitrate: Annotated[
-        Optional[str], typer.Option("--bitrate", help="Transcode target bitrate, e.g. 2M.")
+        str | None, typer.Option("--bitrate", help="Transcode target bitrate, e.g. 2M.")
     ] = None,
     codec: Annotated[
-        Optional[VideoCodec], typer.Option("--codec", help="Transcode codec (default: h264).")
+        VideoCodec | None, typer.Option("--codec", help="Transcode codec (default: h264).")
     ] = None,
     encoder: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--encoder", help="Explicit ffmpeg encoder, e.g. h264_nvenc (overrides --codec)."
         ),
     ] = None,
     gop: Annotated[
-        Optional[int], typer.Option("--gop", help="Keyframe interval in frames when transcoding.")
+        int | None, typer.Option("--gop", help="Keyframe interval in frames when transcoding.")
     ] = None,
 ) -> None:
     """Append a camera to an existing configuration file.
@@ -931,7 +931,7 @@ def add(
     try:
         stack = load_stack(path)
     except ConfigError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
 
     overrides = _video_overrides(resolution, fps, bitrate, codec, encoder, gop, None)
     try:
@@ -950,7 +950,7 @@ def add(
         )
         CameraStack.model_validate(stack.model_dump())
     except ValidationError as exc:
-        raise _fail(f"invalid camera definition:\n{format_validation_error(exc)}")
+        raise _fail(f"invalid camera definition:\n{format_validation_error(exc)}") from exc
 
     save_stack(stack, path)
     console.print(f"added [bold]{stack.cameras[-1].name}[/] to {path}")
@@ -968,9 +968,7 @@ def list_cameras(config: ConfigOption = None, host: DisplayHostOption = None) ->
 def urls(
     config: ConfigOption = None,
     host: DisplayHostOption = None,
-    all_cameras: Annotated[
-        bool, typer.Option("--all", help="Include disabled cameras.")
-    ] = False,
+    all_cameras: Annotated[bool, typer.Option("--all", help="Include disabled cameras.")] = False,
 ) -> None:
     """Print one RTSP URL per line (handy for scripts and pipelines)."""
     stack = _load_stack_or_exit(config)
@@ -992,7 +990,7 @@ def show(config: ConfigOption = None) -> None:
 @app.command("clock-status")
 def clock_status(
     ntp_server: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--ntp-server",
             help=(
@@ -1025,7 +1023,7 @@ def clock_status(
         offset, rtt = measure_offset(ntp_server)
     except NTPError as exc:
         console.print(f"[red]NTP error    : {exc}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
 
     sign = "+" if offset >= 0 else ""
     console.print(f"Offset       : {sign}{offset * 1000:.3f} ms")
@@ -1050,11 +1048,9 @@ def clock_status(
 
 @app.command()
 def replay(
-    capture: Annotated[
-        Path, typer.Argument(help="Capture file to replay (.pcap or .pcapng).")
-    ],
+    capture: Annotated[Path, typer.Argument(help="Capture file to replay (.pcap or .pcapng).")],
     path: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--path", help="RTSP path to serve on (default: the capture file stem)."),
     ] = None,
     host: HostOption = None,
@@ -1078,14 +1074,14 @@ def replay(
         float, typer.Option("--speed", help="Playback speed multiplier (1.0 = as captured).")
     ] = 1.0,
     sdp: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--sdp", help="Session description to use when the capture has no DESCRIBE."),
     ] = None,
     username: Annotated[
-        Optional[str], typer.Option("--username", help="Require basic auth with this username.")
+        str | None, typer.Option("--username", help="Require basic auth with this username.")
     ] = None,
     password: Annotated[
-        Optional[str], typer.Option("--password", help="Password for --username.")
+        str | None, typer.Option("--password", help="Password for --username.")
     ] = None,
     list_tracks: Annotated[
         bool,
@@ -1111,9 +1107,7 @@ def replay(
     # appears in argv, where any user on the box could read it.
     secret = password if password is not None else os.environ.get(REPLAY_PASSWORD_ENV)
     if (username is None) != (secret is None):
-        raise _fail(
-            f"--username and --password (or ${REPLAY_PASSWORD_ENV}) must be given together"
-        )
+        raise _fail(f"--username and --password (or ${REPLAY_PASSWORD_ENV}) must be given together")
     password = secret
 
     from . import replay_source as _replay_source
@@ -1124,9 +1118,9 @@ def replay(
             capture_path, sdp_override=Path(sdp).expanduser() if sdp else None
         )
     except _replay_source.ReplaySourceError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
     except PcapError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
 
     for warning in source.warnings:
         error_console.print(f"[yellow]warning:[/] {warning}")
@@ -1148,9 +1142,9 @@ def replay(
             rewrite_on_loop=rewrite_on_loop,
         )
     except OSError as exc:
-        raise _fail(f"could not bind RTSP port {port}: {exc}")
+        raise _fail(f"could not bind RTSP port {port}: {exc}") from exc
     except ValueError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
 
     console.print(f"serving [bold]{server.rtsp_url()}[/]")
     console.print("[dim]press Ctrl-C to stop[/]")
@@ -1170,7 +1164,7 @@ def probe(
     try:
         info = probe_source(Path(source).expanduser())
     except ProbeError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
 
     camera = CameraSpec(name="probe", source=Path(source).expanduser())
 
@@ -1191,7 +1185,7 @@ def probe(
 @app.command()
 def doctor(
     mediamtx_binary: Annotated[
-        Optional[Path], typer.Option("--mediamtx-binary", help="Check this MediaMTX binary.")
+        Path | None, typer.Option("--mediamtx-binary", help="Check this MediaMTX binary.")
     ] = None,
     mediamtx_version: Annotated[
         str,
@@ -1270,7 +1264,7 @@ def install_server(
             on_event=lambda message: console.print(f"[dim]{message}[/]"),
         )
     except binaries.BinaryError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
     console.print(f"installed [bold]{path}[/]")
 
 
@@ -1313,11 +1307,11 @@ def install(
     try:
         load_stack(path)
     except ConfigError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
     try:
         summary = _service.install(name, Path(path).expanduser().resolve())
     except ServiceError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
     console.print(f"[green]installed[/] {summary}")
 
 
@@ -1327,7 +1321,7 @@ def start(name: _NameOption = "vcam") -> None:
     try:
         summary = _service.start(name)
     except ServiceError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
     console.print(f"[green]started[/] {summary}")
 
 
@@ -1337,7 +1331,7 @@ def stop(name: _NameOption = "vcam") -> None:
     try:
         summary = _service.stop(name)
     except ServiceError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
     console.print(f"[yellow]stopped[/] {summary}")
 
 
@@ -1350,7 +1344,7 @@ def status(name: _NameOption = "vcam") -> None:
     try:
         svc_status = _service.status(name)
     except ServiceError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
     style = "green" if svc_status.active else ("yellow" if svc_status.installed else "red")
     console.print(f"[{style}]{svc_status.line}[/]")
     if not svc_status.active:
@@ -1363,7 +1357,7 @@ def uninstall(name: _NameOption = "vcam") -> None:
     try:
         summary = _service.uninstall(name)
     except ServiceError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
     console.print(f"[red]removed[/] {summary}")
 
 
@@ -1373,7 +1367,7 @@ def logs(name: _NameOption = "vcam") -> None:
     try:
         _service.tail_logs(name)
     except ServiceError as exc:
-        raise _fail(str(exc))
+        raise _fail(str(exc)) from exc
     except KeyboardInterrupt:
         pass
 

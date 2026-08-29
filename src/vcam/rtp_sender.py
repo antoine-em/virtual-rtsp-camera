@@ -8,6 +8,7 @@ minutes of replay.
 
 from __future__ import annotations
 
+import contextlib
 import socket
 import threading
 import time
@@ -76,11 +77,9 @@ class RtpSender:
     def send_to(self, data: bytes, address: tuple[str, int]) -> None:
         if self._closed:
             return
-        try:
+        # A reader that vanished mid-replay must not take the server down.
+        with contextlib.suppress(OSError):
             self._socket.sendto(data, address)
-        except OSError:
-            # A reader that vanished mid-replay must not take the server down.
-            pass
 
     def close(self) -> None:
         if self._closed:
@@ -88,7 +87,7 @@ class RtpSender:
         self._closed = True
         self._socket.close()
 
-    def __enter__(self) -> "RtpSender":
+    def __enter__(self) -> RtpSender:
         return self
 
     def __exit__(self, _exc_type, _exc, _tb) -> None:

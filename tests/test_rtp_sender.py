@@ -54,7 +54,9 @@ def test_pacing_does_not_burn_cpu_between_packets() -> None:
 def test_stop_interrupts_a_long_wait_immediately() -> None:
     pacer = Pacer()
     result: list[bool] = []
-    thread = threading.Thread(target=lambda: result.append(pacer.wait_until(time.perf_counter() + 30)))
+    thread = threading.Thread(
+        target=lambda: result.append(pacer.wait_until(time.perf_counter() + 30))
+    )
     thread.start()
     time.sleep(0.05)
     pacer.stop()

@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -52,6 +51,7 @@ class SimulationMode(str, Enum):
     FLAKY = "flaky"
     STUTTER = "stutter"
 
+
 #: Modes whose behaviour varies over time, driven by `interval` and `duration`.
 TEMPORAL_SIMULATION_MODES = frozenset({SimulationMode.FLAKY, SimulationMode.STUTTER})
 
@@ -71,19 +71,19 @@ class VideoSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     codec: VideoCodec = VideoCodec.H264
-    encoder: Optional[str] = Field(
+    encoder: str | None = Field(
         default=None,
         description="Explicit ffmpeg encoder, e.g. h264_nvenc. Overrides `codec`.",
     )
-    resolution: Optional[str] = Field(default=None, description="WIDTHxHEIGHT, e.g. 1280x720")
-    fps: Optional[float] = Field(default=None, gt=0, le=240)
-    bitrate: Optional[str] = Field(default=None, description="e.g. 2M or 800k")
-    gop: Optional[int] = Field(default=None, gt=0, description="Keyframe interval in frames")
+    resolution: str | None = Field(default=None, description="WIDTHxHEIGHT, e.g. 1280x720")
+    fps: float | None = Field(default=None, gt=0, le=240)
+    bitrate: str | None = Field(default=None, description="e.g. 2M or 800k")
+    gop: int | None = Field(default=None, gt=0, description="Keyframe interval in frames")
     preset: str = "veryfast"
 
     @field_validator("resolution")
     @classmethod
-    def _check_resolution(cls, value: Optional[str]) -> Optional[str]:
+    def _check_resolution(cls, value: str | None) -> str | None:
         if value is None:
             return None
         if not RESOLUTION_RE.match(value):
@@ -92,7 +92,7 @@ class VideoSettings(BaseModel):
 
     @field_validator("bitrate")
     @classmethod
-    def _check_bitrate(cls, value: Optional[str]) -> Optional[str]:
+    def _check_bitrate(cls, value: str | None) -> str | None:
         if value is None:
             return None
         if not BITRATE_RE.match(value):
@@ -103,7 +103,7 @@ class VideoSettings(BaseModel):
     def ffmpeg_encoder(self) -> str:
         return self.encoder or ENCODER_BY_CODEC[self.codec]
 
-    def scale_size(self) -> Optional[tuple[int, int]]:
+    def scale_size(self) -> tuple[int, int] | None:
         if self.resolution is None:
             return None
         match = RESOLUTION_RE.match(self.resolution)
@@ -125,13 +125,11 @@ class SimulationSpec(BaseModel):
     noise_level: int = Field(
         default=30, ge=1, le=100, description="Noise amplitude for the `noise` mode"
     )
-    interval: float = Field(
-        default=30.0, gt=0, description="Seconds between flaky/stutter events"
-    )
+    interval: float = Field(default=30.0, gt=0, description="Seconds between flaky/stutter events")
     duration: float = Field(
         default=5.0, gt=0, description="How long each flaky/stutter event lasts"
     )
-    filters: Optional[str] = Field(
+    filters: str | None = Field(
         default=None,
         description="Extra ffmpeg filters appended to the chain, e.g. 'gblur=sigma=2'",
     )
@@ -155,7 +153,7 @@ class CameraSpec(BaseModel):
     start_offset: float = Field(default=0.0, ge=0, description="Seek into the file, in seconds")
     transport: Transport = Transport.TCP
     audio: bool = False
-    port: Optional[int] = Field(
+    port: int | None = Field(
         default=None,
         gt=0,
         le=65535,
@@ -207,7 +205,7 @@ class ReplaySpec(BaseModel):
             "Disable only to reproduce what a raw rewind looks like to a decoder."
         ),
     )
-    sdp: Optional[Path] = Field(
+    sdp: Path | None = Field(
         default=None,
         description="Override the session description when the capture has no DESCRIBE",
     )
@@ -224,7 +222,7 @@ class ReplaySpec(BaseModel):
 
     @field_validator("source", "sdp")
     @classmethod
-    def _expand(cls, value: Optional[Path]) -> Optional[Path]:
+    def _expand(cls, value: Path | None) -> Path | None:
         return Path(value).expanduser() if value is not None else None
 
     def path_suffix(self) -> str:
@@ -267,8 +265,8 @@ class ServerSpec(BaseModel):
     log_level: str = "warn"
     read_timeout: str = "10s"
     write_timeout: str = "10s"
-    auth: Optional[AuthSpec] = None
-    ntp_server: Optional[str] = Field(
+    auth: AuthSpec | None = None
+    ntp_server: str | None = Field(
         default=None,
         description=(
             "Sync the container clock to this NTP server before starting. "
@@ -296,7 +294,7 @@ class CameraStack(BaseModel):
     replays: list[ReplaySpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _check_unique_paths(self) -> "CameraStack":
+    def _check_unique_paths(self) -> CameraStack:
         seen: set[tuple[int, str]] = set()
         for camera in self.cameras:
             key = (camera.port or self.server.rtsp_port, camera.name)
@@ -339,7 +337,7 @@ class CameraStack(BaseModel):
     def replay_url(
         self,
         replay: ReplaySpec,
-        host: Optional[str] = None,
+        host: str | None = None,
         *,
         with_credentials: bool = True,
     ) -> str:
@@ -355,7 +353,7 @@ class CameraStack(BaseModel):
     def read_url(
         self,
         camera: CameraSpec,
-        host: Optional[str] = None,
+        host: str | None = None,
         *,
         with_credentials: bool = True,
     ) -> str:

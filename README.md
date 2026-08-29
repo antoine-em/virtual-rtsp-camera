@@ -551,6 +551,16 @@ uv sync
 uv run pytest
 ```
 
+CI gates the same three checks, so run them before pushing:
+
+```bash
+uv run ruff check .          # lint (pyflakes, import order, pyupgrade, bugbear)
+uv run ruff format --check . # formatting, 100 columns
+uv run mypy                  # type check src/vcam
+```
+
+`ruff check --fix` and `ruff format` apply the mechanical fixes.
+
 ## Contributing and project scope
 
 Contributions are welcome, but this repository is intentionally maintained with a narrow scope to keep it sustainable.
