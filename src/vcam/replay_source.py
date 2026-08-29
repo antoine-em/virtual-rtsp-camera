@@ -41,7 +41,13 @@ FlowKey = tuple[Endpoint, Endpoint]
 #: Loading materialises the capture several times over (datagrams, reassembled
 #: TCP streams, the timeline), so refuse a file that would exhaust memory
 #: instead of being OOM-killed with no explanation.
-DEFAULT_MAX_CAPTURE_BYTES = 512 * 1024 * 1024
+#:
+#: Measured across five captures from 2.7 MB to 164 MB, the cost is linear and
+#: converges to ~6x the file size in RSS at ~15 MB/s. The default therefore
+#: caps a load at roughly 1.5 GB of peak memory; raise
+#: ``VCAM_MAX_CAPTURE_BYTES`` if you have the headroom and the patience.
+LOAD_MEMORY_FACTOR = 6
+DEFAULT_MAX_CAPTURE_BYTES = 256 * 1024 * 1024
 MAX_CAPTURE_BYTES_ENV = "VCAM_MAX_CAPTURE_BYTES"
 
 #: Credentials that survive into a capture verbatim (SEC-001).
@@ -371,7 +377,8 @@ def _check_capture_size(capture: Path) -> None:
     if size > limit:
         raise ReplaySourceError(
             f"{capture} is {size / 1e6:.0f} MB, over the {limit / 1e6:.0f} MB replay "
-            "limit; trim it (`editcap -A/-B`, or a tighter tcpdump filter) or raise "
+            f"limit; loading it would need roughly {size * LOAD_MEMORY_FACTOR / 1e9:.1f} GB "
+            "of memory. Trim it (`editcap -A/-B`, or a tighter tcpdump filter) or raise "
             f"${MAX_CAPTURE_BYTES_ENV}"
         )
 

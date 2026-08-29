@@ -230,9 +230,10 @@ What replay deliberately does **not** do:
 - **No seeking**, and no RTCP Sender Reports — so a multi-track capture carries no
   RTP-to-wall-clock mapping for A/V sync.
 - **No session enforcement.** Any reader on a connection can drive it; this is a lab tool.
-- **No huge captures.** Loading materialises the packets several times over, so anything
-  above 512 MB is refused rather than risking an OOM kill. Trim it (`editcap -A/-B`, or a
-  tighter `tcpdump` filter), or raise `$VCAM_MAX_CAPTURE_BYTES`.
+- **No huge captures.** Loading materialises the packets several times over — measured at
+  roughly **6× the file size in RAM, at ~15 MB/s** — so anything above 256 MB (about 1.5 GB
+  of memory) is refused rather than risking an OOM kill. Trim it (`editcap -A/-B`, or a
+  tighter `tcpdump` filter), or raise `$VCAM_MAX_CAPTURE_BYTES` if you have the headroom.
 
 Both transports are handled: RTP-over-UDP and `RTP/AVP/TCP` interleaved inside the RTSP
 connection (which is what most IP cameras actually use). Readers choose their own transport

@@ -308,3 +308,18 @@ def test_an_oversized_capture_is_refused_with_a_way_out(tmp_path: Path, monkeypa
     # The limit is an env var precisely so a legitimate big capture can pass.
     monkeypatch.setenv(MAX_CAPTURE_BYTES_ENV, str(10 * 1024 * 1024))
     assert replay_source.load(path).packet_count == 10
+
+
+def test_the_refusal_states_the_memory_a_load_would_need(tmp_path: Path, monkeypatch) -> None:
+    """The file size alone does not tell you why 300 MB is a problem.
+
+    Loading costs ~6x the file size in RAM (measured from 2.7 MB to 164 MB),
+    so the number that actually decides whether a capture is viable is the
+    projected memory, not the size on disk.
+    """
+    path = tmp_path / "huge.pcap"
+    write_udp_capture(path)
+    monkeypatch.setenv(MAX_CAPTURE_BYTES_ENV, "16")
+
+    with pytest.raises(ReplaySourceError, match=r"GB of memory"):
+        replay_source.load(path)

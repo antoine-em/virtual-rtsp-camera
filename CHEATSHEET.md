@@ -157,8 +157,8 @@ uv run vcam replay camera.pcap --port 8600 --path cam1
 | `--username/--password` | require basic auth (`$VCAM_REPLAY_PASSWORD` keeps the secret out of argv) |
 
 Not supported by design: `PAUSE` (answered `501` — resuming would rewind the RTP counters),
-seeking, and RTCP Sender Reports. Captures over 512 MB are refused; trim them or raise
-`$VCAM_MAX_CAPTURE_BYTES`.
+seeking, and RTCP Sender Reports. Captures over 256 MB are refused (loading costs ~6× the
+file size in RAM); trim them or raise `$VCAM_MAX_CAPTURE_BYTES`.
 
 In YAML (`source` is the capture, one port each):
 
