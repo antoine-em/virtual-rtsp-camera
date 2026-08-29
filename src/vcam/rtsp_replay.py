@@ -39,6 +39,9 @@ START_DELAY = 0.05
 #: How long a reader's socket blocks in ``recv`` before the handler re-checks
 #: whether the server is stopping. This is what makes shutdown prompt.
 READ_TIMEOUT = 0.5
+#: How long stopping a reader waits for its player thread to unwind. The pacer
+#: checks for a stop between packets, so this only has to cover one send.
+PLAYER_JOIN_TIMEOUT = 2.0
 
 PUBLIC_METHODS = "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER, SET_PARAMETER"
 
@@ -182,9 +185,17 @@ class _Connection:
         self.player.start()
 
     def stop_player(self) -> None:
-        if self.player is not None:
-            self.player.stop()
-            self.player = None
+        player = self.player
+        if player is None:
+            return
+        self.player = None
+        player.stop()
+        # Signalling the pacer only asks the player to stop; joining is what
+        # makes "the server has stopped streaming" true by the time we return.
+        # The player reaches us through send_raw() on a dead socket, and a
+        # thread cannot join itself.
+        if player is not threading.current_thread():
+            player.join(timeout=PLAYER_JOIN_TIMEOUT)
 
     def close(self) -> None:
         self.stop_player()
@@ -198,10 +209,13 @@ class _Connection:
         Closing the transports is not enough: the handler is parked in ``recv``
         on this socket, and until that returns it never runs its cleanup or
         re-checks whether the server is stopping.
+
+        The socket is shut down *before* the transports so a player blocked in
+        ``sendall`` on a full buffer fails fast instead of holding up the join.
         """
-        self.close()
         with contextlib.suppress(OSError):
             self.socket.shutdown(socket.SHUT_RDWR)
+        self.close()
 
 
 class _RtspHandler(socketserver.BaseRequestHandler):
