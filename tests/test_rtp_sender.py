@@ -6,8 +6,6 @@ import socket
 import threading
 import time
 
-import pytest
-
 from vcam.rtp_sender import Pacer, RtpSender, bind_rtp_pair
 
 
@@ -27,14 +25,49 @@ def test_a_past_deadline_returns_at_once_and_is_counted() -> None:
     assert pacer.late_packets == 1
 
 
+def _worst_single_overshoot() -> float:
+    """How far this machine overshoots one short wait, worst of five tries.
+
+    Used to size the drift budget below. A shared CI runner oversleeps far
+    worse than a laptop, and that is the scheduler's doing rather than the
+    pacer's, so the tolerance has to be measured rather than guessed.
+    """
+    worst = 0.0
+    for _ in range(5):
+        pacer = Pacer()
+        base = time.perf_counter()
+        pacer.wait_until(base + 0.005)
+        worst = max(worst, time.perf_counter() - base - 0.005)
+    return worst
+
+
 def test_pacing_does_not_accumulate_drift() -> None:
-    """Absolute deadlines: ten 5 ms gaps must still total about 50 ms."""
-    pacer = Pacer()
-    base = time.perf_counter()
-    for index in range(1, 11):
-        pacer.wait_until(base + index * 0.005)
-    elapsed = time.perf_counter() - base
-    assert elapsed == pytest.approx(0.05, abs=0.02)
+    """Absolute deadlines: the total tracks the last deadline, not the gap count.
+
+    Sleeping each gap in turn pays the scheduler's overshoot once per wait, so
+    the error grows with the number of packets. Waiting on absolute deadlines
+    pays it once overall: after an overshoot the next deadlines are already in
+    the past and return immediately, which is the catching-up that
+    ``late_packets`` counts.
+
+    So the test spans the same 50 ms twice, once with 10 deadlines and once
+    with 50. Accumulation would make the second run five times worse; absolute
+    deadlines put both within a single overshoot of 50 ms. The budget is
+    calibrated from this machine, because the previous ``0.05 +/- 0.02`` failed
+    on a busy runner that was merely slow, not drifting.
+    """
+    budget = 0.05 + max(0.01, 3 * _worst_single_overshoot())
+
+    for deadlines, gap in ((10, 0.005), (50, 0.001)):
+        pacer = Pacer()
+        base = time.perf_counter()
+        for index in range(1, deadlines + 1):
+            pacer.wait_until(base + index * gap)
+        elapsed = time.perf_counter() - base
+
+        # Exact and unflakeable: an absolute deadline is never met early.
+        assert elapsed >= 0.05
+        assert elapsed < budget, f"{deadlines} deadlines drifted to {elapsed:.4f}s"
 
 
 def test_pacing_does_not_burn_cpu_between_packets() -> None:
