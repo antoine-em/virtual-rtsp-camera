@@ -5,6 +5,12 @@ on:
     branches: ["main"]
   pull_request:
 
+# Nothing here writes to the repository: the jobs check out, test, build and
+# push to Docker Hub with its own credentials. Least privilege by default, in
+# line with release.yml and stale.yml.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: lint
