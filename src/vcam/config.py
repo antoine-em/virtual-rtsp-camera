@@ -66,8 +66,8 @@ def load_stack(path: Path) -> CameraStack:
     except ValidationError as exc:
         raise ConfigError(f"{path} is invalid:\n{format_validation_error(exc)}") from exc
 
-    if not stack.cameras:
-        raise ConfigError(f"{path} declares no cameras")
+    if not stack.cameras and not stack.replays:
+        raise ConfigError(f"{path} declares no cameras or replays")
 
     return _resolve_sources(stack, path.parent)
 
@@ -77,6 +77,11 @@ def _resolve_sources(stack: CameraStack, base_dir: Path) -> CameraStack:
     for camera in stack.cameras:
         if not camera.source.is_absolute():
             camera.source = (base_dir / camera.source).resolve()
+    for replay in stack.replays:
+        if not replay.source.is_absolute():
+            replay.source = (base_dir / replay.source).resolve()
+        if replay.sdp is not None and not replay.sdp.is_absolute():
+            replay.sdp = (base_dir / replay.sdp).resolve()
     return stack
 
 
@@ -98,6 +103,14 @@ def dump_stack(stack: CameraStack) -> str:
         | {"name": camera.name, "source": str(camera.source)}
         for camera in stack.cameras
     ]
+    if stack.replays:
+        payload["replays"] = [
+            replay.model_dump(mode="json", exclude_defaults=True, exclude_none=True)
+            | {"name": replay.name, "source": str(replay.source), "port": replay.port}
+            for replay in stack.replays
+        ]
+    else:
+        payload.pop("replays", None)
     return yaml.safe_dump(payload, sort_keys=False, default_flow_style=False)
 
 

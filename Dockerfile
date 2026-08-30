@@ -42,7 +42,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # image was cut. perl-base is then dropped: nothing in this image needs it
 # (ffmpeg and CPython both run fine without it) and it carries CVEs that have
 # no fixed package in Debian trixie.
-RUN apt-get update \
+#
+# APT_SNAPSHOT exists purely to key this layer. Without it the layer is served
+# from the build cache forever, so the upgrade silently freezes at whatever was
+# current the day the cache was written and new security updates never land.
+# CI passes today's date, so the layer refreshes daily and the slower layers
+# below (ffmpeg, the wheel, the MediaMTX download) stay cached.
+ARG APT_SNAPSHOT=unpinned
+RUN echo "apt snapshot: ${APT_SNAPSHOT}" \
+    && apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ffmpeg \
     && useradd --create-home vcam \
@@ -54,8 +62,10 @@ WORKDIR /vcam
 
 # pip is only needed to install the wheel; dropping it from the runtime image
 # removes a package that regularly carries advisories and is never used here.
+# The replay extra (scapy) is installed here because capture replay is a
+# first-class use case in the container; the base wheel leaves it out.
 COPY --from=build /out/vcam-*.whl /tmp/wheel/
-RUN pip install --no-cache-dir /tmp/wheel/vcam-*.whl \
+RUN pip install --no-cache-dir "$(ls /tmp/wheel/vcam-*.whl)[replay]" \
     && rm -rf /tmp/wheel \
     && pip uninstall -y pip
 

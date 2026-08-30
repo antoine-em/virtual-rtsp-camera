@@ -12,13 +12,47 @@ dependencies = [
     "pydantic>=2.7",
 ]
 
+[project.optional-dependencies]
+# Capture replay only. Kept out of the base install so the nine commands that
+# never touch a capture file do not pay for ~12 MB of scapy.
+replay = ["scapy>=2.5"]
+
 [project.scripts]
 vcam = "vcam.cli:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "scapy>=2.5",
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "types-pyyaml>=6.0",
 ]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# E/F: pyflakes + pycodestyle. I: import order. UP: keep us on the 3.10 floor
+# rather than 3.8 habits. B: bugbear. SIM: obvious simplifications.
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# The prose in docstrings and comments uses real typographic dashes on purpose;
+# RUF00x would have us flatten them into hyphens.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer reads defaults off the signature, so its option objects are call
+# expressions in defaults by design.
+"src/vcam/cli.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/vcam"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
 
 [build-system]
 requires = ["hatchling"]

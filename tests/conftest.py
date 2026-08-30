@@ -2,12 +2,39 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from vcam.models import CameraSpec, CameraStack
 from vcam.probe import MediaInfo
+
+
+@pytest.fixture(autouse=True)
+def no_thread_leaks() -> object:
+    """Fail a test that leaves one of our threads running.
+
+    Servers and players are daemon threads, so a lifecycle bug is invisible to
+    the interpreter and to every assertion about bytes on the wire. It only
+    shows up as a thread that outlives the test that started it.
+    """
+    before = {thread.ident for thread in threading.enumerate()}
+    yield
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        leaked = [
+            thread
+            for thread in threading.enumerate()
+            if thread.ident not in before
+            and (thread.name.startswith("vcam-") or "process_request" in thread.name)
+        ]
+        if not leaked:
+            return
+        time.sleep(0.05)
+    pytest.fail(f"threads outlived the test: {[thread.name for thread in leaked]}")
 
 
 @pytest.fixture

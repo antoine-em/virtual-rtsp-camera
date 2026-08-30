@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import socket
 import struct
 import time
 from pathlib import Path
@@ -11,15 +10,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from vcam.ntp import (
-    NTPError,
     _NTP_DELTA,
     _STEP_THRESHOLD,
+    NTPError,
     apply_offset,
     has_sys_time_cap,
     measure_offset,
     running_in_container,
 )
-
 
 # ---------------------------------------------------------------------------
 # running_in_container
@@ -143,7 +141,7 @@ def test_measure_offset_positive() -> None:
         patch("vcam.ntp.socket.socket", return_value=mock_sock),
         patch("vcam.ntp.time.time", side_effect=[fake_now, fake_now + 0.001] * 5),
     ):
-        offset, rtt = measure_offset("127.0.0.1", samples=1)
+        offset, _rtt = measure_offset("127.0.0.1", samples=1)
 
     assert abs(offset - 1.0) < 0.01
 
@@ -154,9 +152,11 @@ def test_measure_offset_all_fail() -> None:
     mock_sock.__exit__ = MagicMock(return_value=False)
     mock_sock.sendto.side_effect = OSError("network unreachable")
 
-    with patch("vcam.ntp.socket.socket", return_value=mock_sock):
-        with pytest.raises(NTPError, match="NTP query"):
-            measure_offset("10.0.0.1", samples=2)
+    with (
+        patch("vcam.ntp.socket.socket", return_value=mock_sock),
+        pytest.raises(NTPError, match="NTP query"),
+    ):
+        measure_offset("10.0.0.1", samples=2)
 
 
 def test_measure_offset_picks_lowest_rtt() -> None:

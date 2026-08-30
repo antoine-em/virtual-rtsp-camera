@@ -7,7 +7,6 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 class ProbeError(RuntimeError):
@@ -19,23 +18,23 @@ class MediaInfo:
     """Subset of ffprobe output that matters for republishing."""
 
     path: Path
-    codec: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    fps: Optional[float] = None
-    duration: Optional[float] = None
-    bitrate: Optional[int] = None
-    pix_fmt: Optional[str] = None
+    codec: str | None = None
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
+    duration: float | None = None
+    bitrate: int | None = None
+    pix_fmt: str | None = None
     has_audio: bool = False
 
     @property
-    def resolution(self) -> Optional[str]:
+    def resolution(self) -> str | None:
         if self.width and self.height:
             return f"{self.width}x{self.height}"
         return None
 
 
-def _parse_rate(value: Optional[str]) -> Optional[float]:
+def _parse_rate(value: str | None) -> float | None:
     if not value or value in ("0/0", "0"):
         return None
     if "/" in value:
@@ -121,7 +120,7 @@ def probe(source: Path, ffprobe: str = "ffprobe", timeout: float = 20.0) -> Medi
     )
 
 
-def try_probe(source: Path, ffprobe: str = "ffprobe") -> Optional[MediaInfo]:
+def try_probe(source: Path, ffprobe: str = "ffprobe") -> MediaInfo | None:
     """Probe *source*, returning ``None`` instead of raising on failure."""
     try:
         return probe(source, ffprobe=ffprobe)

@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -52,6 +51,7 @@ class SimulationMode(str, Enum):
     FLAKY = "flaky"
     STUTTER = "stutter"
 
+
 #: Modes whose behaviour varies over time, driven by `interval` and `duration`.
 TEMPORAL_SIMULATION_MODES = frozenset({SimulationMode.FLAKY, SimulationMode.STUTTER})
 
@@ -71,19 +71,19 @@ class VideoSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     codec: VideoCodec = VideoCodec.H264
-    encoder: Optional[str] = Field(
+    encoder: str | None = Field(
         default=None,
         description="Explicit ffmpeg encoder, e.g. h264_nvenc. Overrides `codec`.",
     )
-    resolution: Optional[str] = Field(default=None, description="WIDTHxHEIGHT, e.g. 1280x720")
-    fps: Optional[float] = Field(default=None, gt=0, le=240)
-    bitrate: Optional[str] = Field(default=None, description="e.g. 2M or 800k")
-    gop: Optional[int] = Field(default=None, gt=0, description="Keyframe interval in frames")
+    resolution: str | None = Field(default=None, description="WIDTHxHEIGHT, e.g. 1280x720")
+    fps: float | None = Field(default=None, gt=0, le=240)
+    bitrate: str | None = Field(default=None, description="e.g. 2M or 800k")
+    gop: int | None = Field(default=None, gt=0, description="Keyframe interval in frames")
     preset: str = "veryfast"
 
     @field_validator("resolution")
     @classmethod
-    def _check_resolution(cls, value: Optional[str]) -> Optional[str]:
+    def _check_resolution(cls, value: str | None) -> str | None:
         if value is None:
             return None
         if not RESOLUTION_RE.match(value):
@@ -92,7 +92,7 @@ class VideoSettings(BaseModel):
 
     @field_validator("bitrate")
     @classmethod
-    def _check_bitrate(cls, value: Optional[str]) -> Optional[str]:
+    def _check_bitrate(cls, value: str | None) -> str | None:
         if value is None:
             return None
         if not BITRATE_RE.match(value):
@@ -103,7 +103,7 @@ class VideoSettings(BaseModel):
     def ffmpeg_encoder(self) -> str:
         return self.encoder or ENCODER_BY_CODEC[self.codec]
 
-    def scale_size(self) -> Optional[tuple[int, int]]:
+    def scale_size(self) -> tuple[int, int] | None:
         if self.resolution is None:
             return None
         match = RESOLUTION_RE.match(self.resolution)
@@ -125,13 +125,11 @@ class SimulationSpec(BaseModel):
     noise_level: int = Field(
         default=30, ge=1, le=100, description="Noise amplitude for the `noise` mode"
     )
-    interval: float = Field(
-        default=30.0, gt=0, description="Seconds between flaky/stutter events"
-    )
+    interval: float = Field(default=30.0, gt=0, description="Seconds between flaky/stutter events")
     duration: float = Field(
         default=5.0, gt=0, description="How long each flaky/stutter event lasts"
     )
-    filters: Optional[str] = Field(
+    filters: str | None = Field(
         default=None,
         description="Extra ffmpeg filters appended to the chain, e.g. 'gblur=sigma=2'",
     )
@@ -155,7 +153,7 @@ class CameraSpec(BaseModel):
     start_offset: float = Field(default=0.0, ge=0, description="Seek into the file, in seconds")
     transport: Transport = Transport.TCP
     audio: bool = False
-    port: Optional[int] = Field(
+    port: int | None = Field(
         default=None,
         gt=0,
         le=65535,
@@ -178,6 +176,54 @@ class CameraSpec(BaseModel):
     @classmethod
     def _expand_source(cls, value: Path) -> Path:
         return Path(value).expanduser()
+
+    def path_suffix(self) -> str:
+        return self.name
+
+
+class ReplaySpec(BaseModel):
+    """A capture file replayed over its own RTSP listener.
+
+    Replay does not go through MediaMTX — a media server re-packetises RTP,
+    which would erase exactly the wire-level detail a capture exists to
+    preserve — so each replay owns a dedicated port rather than sharing the
+    camera server's.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    source: Path = Field(description="Path to a .pcap or .pcapng capture")
+    port: int = Field(gt=0, le=65535, description="RTSP port for this replay's own listener")
+    enabled: bool = True
+    loop: bool = True
+    speed: float = Field(default=1.0, gt=0, le=100, description="Playback speed multiplier")
+    rewrite_on_loop: bool = Field(
+        default=True,
+        description=(
+            "Keep RTP sequence numbers and timestamps monotonic across loops. "
+            "Disable only to reproduce what a raw rewind looks like to a decoder."
+        ),
+    )
+    sdp: Path | None = Field(
+        default=None,
+        description="Override the session description when the capture has no DESCRIBE",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        if not CAMERA_NAME_RE.match(value):
+            raise ValueError(
+                f"replay name {value!r} is not a valid RTSP path segment "
+                "(use letters, digits, '_', '-', '.')"
+            )
+        return value
+
+    @field_validator("source", "sdp")
+    @classmethod
+    def _expand(cls, value: Path | None) -> Path | None:
+        return Path(value).expanduser() if value is not None else None
 
     def path_suffix(self) -> str:
         return self.name
@@ -219,8 +265,8 @@ class ServerSpec(BaseModel):
     log_level: str = "warn"
     read_timeout: str = "10s"
     write_timeout: str = "10s"
-    auth: Optional[AuthSpec] = None
-    ntp_server: Optional[str] = Field(
+    auth: AuthSpec | None = None
+    ntp_server: str | None = Field(
         default=None,
         description=(
             "Sync the container clock to this NTP server before starting. "
@@ -239,15 +285,16 @@ class ServerSpec(BaseModel):
 
 
 class CameraStack(BaseModel):
-    """Top-level configuration: one server definition plus its cameras."""
+    """Top-level configuration: one server definition, its cameras and replays."""
 
     model_config = ConfigDict(extra="forbid")
 
     server: ServerSpec = Field(default_factory=ServerSpec)
     cameras: list[CameraSpec] = Field(default_factory=list)
+    replays: list[ReplaySpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _check_unique_paths(self) -> "CameraStack":
+    def _check_unique_paths(self) -> CameraStack:
         seen: set[tuple[int, str]] = set()
         for camera in self.cameras:
             key = (camera.port or self.server.rtsp_port, camera.name)
@@ -256,11 +303,29 @@ class CameraStack(BaseModel):
                     f"duplicate camera path: rtsp://...:{key[0]}/{key[1]} is declared twice"
                 )
             seen.add(key)
+
+        # A replay runs its own listener, so it cannot share a port with the
+        # MediaMTX instance serving the cameras — not even on a different path.
+        camera_ports = {camera.port or self.server.rtsp_port for camera in self.cameras}
+        replay_ports: set[int] = set()
+        for replay in self.replays:
+            if replay.port in camera_ports:
+                raise ValueError(
+                    f"replay {replay.name!r} uses port {replay.port}, which is already "
+                    "served by MediaMTX; give the replay its own port"
+                )
+            if replay.port in replay_ports:
+                raise ValueError(f"port {replay.port} is claimed by two replays")
+            replay_ports.add(replay.port)
         return self
 
     @property
     def enabled_cameras(self) -> list[CameraSpec]:
         return [camera for camera in self.cameras if camera.enabled]
+
+    @property
+    def enabled_replays(self) -> list[ReplaySpec]:
+        return [replay for replay in self.replays if replay.enabled]
 
     def effective_port(self, camera: CameraSpec) -> int:
         return camera.port or self.server.rtsp_port
@@ -269,10 +334,26 @@ class CameraStack(BaseModel):
         """Loopback URL the local ffmpeg publisher pushes to (never authenticated)."""
         return f"rtsp://127.0.0.1:{self.effective_port(camera)}/{camera.path_suffix()}"
 
+    def replay_url(
+        self,
+        replay: ReplaySpec,
+        host: str | None = None,
+        *,
+        with_credentials: bool = True,
+    ) -> str:
+        display_host = host or self.display_host()
+        credentials = ""
+        if with_credentials and self.server.auth is not None:
+            credentials = (
+                f"{quote(self.server.auth.username, safe='')}:"
+                f"{quote(self.server.auth.password, safe='')}@"
+            )
+        return f"rtsp://{credentials}{display_host}:{replay.port}/{replay.path_suffix()}"
+
     def read_url(
         self,
         camera: CameraSpec,
-        host: Optional[str] = None,
+        host: str | None = None,
         *,
         with_credentials: bool = True,
     ) -> str:

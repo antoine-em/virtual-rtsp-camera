@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from .models import RTSP_PASSTHROUGH_CODECS, CameraSpec, SimulationMode, StreamMode
 from .probe import MediaInfo
 
@@ -23,7 +21,7 @@ FREEZE_FPS = 1
 DEFAULT_STUTTER_FPS = 25.0
 
 
-def resolve_mode(camera: CameraSpec, info: Optional[MediaInfo]) -> StreamMode:
+def resolve_mode(camera: CameraSpec, info: MediaInfo | None) -> StreamMode:
     """Turn ``auto`` into a concrete mode using the probed source codec.
 
     Falls back to ``copy`` when the source could not be probed: passthrough is the
@@ -38,7 +36,7 @@ def resolve_mode(camera: CameraSpec, info: Optional[MediaInfo]) -> StreamMode:
     return StreamMode.TRANSCODE
 
 
-def _stutter_filters(camera: CameraSpec, info: Optional[MediaInfo]) -> list[str]:
+def _stutter_filters(camera: CameraSpec, info: MediaInfo | None) -> list[str]:
     """Freeze the picture for `duration` out of every `interval + duration`.
 
     `select` drops the frames of the freeze window and `fps` refills the gap by
@@ -58,7 +56,7 @@ def _stutter_filters(camera: CameraSpec, info: Optional[MediaInfo]) -> list[str]
     ]
 
 
-def simulation_filters(camera: CameraSpec, info: Optional[MediaInfo] = None) -> list[str]:
+def simulation_filters(camera: CameraSpec, info: MediaInfo | None = None) -> list[str]:
     """ffmpeg filters contributed by the camera's simulation mode.
 
     Extra user filters are appended last so they apply on top of the fault.
@@ -83,9 +81,7 @@ def simulation_filters(camera: CameraSpec, info: Optional[MediaInfo] = None) -> 
     return filters
 
 
-def simulation_forces_transcode(
-    camera: CameraSpec, info: Optional[MediaInfo] = None
-) -> bool:
+def simulation_forces_transcode(camera: CameraSpec, info: MediaInfo | None = None) -> bool:
     """Whether the simulation needs a decode/encode pass.
 
     Filters rewrite the pixels and ``degraded`` rewrites the bitstream; neither
@@ -96,7 +92,7 @@ def simulation_forces_transcode(
     return bool(simulation_filters(camera, info))
 
 
-def effective_mode(camera: CameraSpec, info: Optional[MediaInfo]) -> StreamMode:
+def effective_mode(camera: CameraSpec, info: MediaInfo | None) -> StreamMode:
     """The mode the publisher really runs, simulation included.
 
     ``resolve_mode`` answers "what does this source need?"; this answers "what
@@ -112,7 +108,7 @@ def build_publish_command(
     camera: CameraSpec,
     target_url: str,
     *,
-    info: Optional[MediaInfo] = None,
+    info: MediaInfo | None = None,
     ffmpeg: str = "ffmpeg",
     log_level: str = "warning",
 ) -> list[str]:
@@ -173,7 +169,7 @@ def build_publish_command(
     return cmd
 
 
-def _build_filters(camera: CameraSpec, info: Optional[MediaInfo] = None) -> str:
+def _build_filters(camera: CameraSpec, info: MediaInfo | None = None) -> str:
     filters: list[str] = []
     size = camera.video.scale_size()
     if size is not None:
@@ -184,7 +180,7 @@ def _build_filters(camera: CameraSpec, info: Optional[MediaInfo] = None) -> str:
     return ",".join(filters)
 
 
-def _effective_bitrate(camera: CameraSpec) -> Optional[str]:
+def _effective_bitrate(camera: CameraSpec) -> str | None:
     """Explicit bitrate wins; a simulation only fills in a sane default."""
     if camera.video.bitrate:
         return camera.video.bitrate
@@ -195,7 +191,7 @@ def _effective_bitrate(camera: CameraSpec) -> Optional[str]:
     return None
 
 
-def _effective_gop(camera: CameraSpec) -> Optional[int]:
+def _effective_gop(camera: CameraSpec) -> int | None:
     if camera.video.gop:
         return camera.video.gop
     if camera.simulation.mode is SimulationMode.FROZEN:

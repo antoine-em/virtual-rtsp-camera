@@ -5,7 +5,38 @@ on:
     branches: ["main"]
   pull_request:
 
+# Nothing here writes to the repository: the jobs check out, test, build and
+# push to Docker Hub with its own credentials. Least privilege by default, in
+# line with release.yml and stale.yml.
+permissions:
+  contents: read
+
 jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      # Style and typing are checked once, not per matrix entry: they do not
+      # vary by OS or interpreter, and ruff pins the 3.10 target itself.
+      - name: Ruff (lint)
+        run: uv run ruff check .
+
+      - name: Ruff (format)
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy
+
   test:
     name: test (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -58,6 +89,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Pin today's apt snapshot
+        id: apt
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push konekuto/vcam:main
         uses: docker/build-push-action@v7
         with:
@@ -66,6 +101,8 @@ jobs:
           push: true
           pull: true
           tags: konekuto/vcam:main
+          build-args: |
+            APT_SNAPSHOT=${{ steps.apt.outputs.date }}
           labels: |
             org.opencontainers.image.title=vcam
             org.opencontainers.image.description=Virtual RTSP camera CLI — serve looping video files as multiplexed RTSP feeds
@@ -84,6 +121,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Pin today's apt snapshot
+        id: apt
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Build image (cache-only, no push)
         uses: docker/build-push-action@v7
         with:
@@ -92,6 +133,8 @@ jobs:
           pull: true
           load: true
           tags: vcam:ci
+          build-args: |
+            APT_SNAPSHOT=${{ steps.apt.outputs.date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

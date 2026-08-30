@@ -20,7 +20,6 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -41,7 +40,7 @@ class ServiceStatus:
 # ---------------------------------------------------------------------------
 
 
-def detect_backend() -> Optional[str]:
+def detect_backend() -> str | None:
     """Return the service backend for this OS: ``'systemd'`` or ``'launchd'``, else ``None``."""
     system = platform.system()
     if system == "Linux":
@@ -239,10 +238,7 @@ def install(name: str, config_path: Path) -> str:
     path.write_bytes(render_launchd_plist(name, command, config_path))
     _launchctl_unload(name, path)
     _launchctl_load(path)
-    return (
-        f"installed launchd agent {path}\n"
-        f"  logs:  tail -f {log}"
-    )
+    return f"installed launchd agent {path}\n  logs:  tail -f {log}"
 
 
 def start(name: str) -> str:

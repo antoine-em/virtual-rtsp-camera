@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 import yaml
 
 from vcam.mediamtx import (
+    API_HOST,
     UDP_BLOCK_SIZE,
     build_auth_users,
     plan_instances,
@@ -15,7 +17,6 @@ from vcam.mediamtx import (
     write_server_config,
 )
 from vcam.models import AuthSpec, CameraSpec, CameraStack, ServerSpec
-
 
 # ---------------------------------------------------------------------------
 # instance planning
@@ -60,7 +61,7 @@ def test_instances_get_distinct_api_and_udp_ports(video_file: Path) -> None:
     assert len(set(api_ports)) == 3
     assert len(set(rtp_ports)) == 3
     # UDP blocks must not overlap: MediaMTX binds 8 consecutive ports.
-    for first, second in zip(sorted(rtp_ports), sorted(rtp_ports)[1:]):
+    for first, second in zip(sorted(rtp_ports), sorted(rtp_ports)[1:], strict=False):
         assert second - first >= UDP_BLOCK_SIZE
 
 
@@ -181,3 +182,34 @@ def test_api_is_restricted_to_loopback(stack: CameraStack) -> None:
     assert api_users
     for user in api_users:
         assert user["ips"] == ["127.0.0.1", "::1"]
+
+
+def test_api_port_probe_respects_a_loopback_only_listener(stack: CameraStack, monkeypatch) -> None:
+    """A port held on 127.0.0.1 must not be handed out as the API port.
+
+    MediaMTX binds its API on loopback specifically. Probing the wildcard
+    address instead reports such a port as free on BSD and macOS, because
+    SO_REUSEADDR allows binding 0.0.0.0:p while another socket holds
+    127.0.0.1:p - so MediaMTX dies on a port vcam just called available.
+    """
+    holder = socket.socket()
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    holder.bind((API_HOST, 0))
+    holder.listen(1)
+    held_port = holder.getsockname()[1]
+
+    try:
+        # Start the search exactly on the held port.
+        monkeypatch.setattr(stack.server, "api_port", held_port)
+        instances = plan_instances(stack)
+        assert instances
+        assert instances[0].api_port != held_port
+    finally:
+        holder.close()
+
+
+def test_api_address_matches_the_probed_address(stack: CameraStack) -> None:
+    """The rendered config must bind whatever the preflight probed."""
+    instance = plan_instances(stack)[0]
+    config = render_server_config(instance, stack.server)
+    assert config["apiAddress"].startswith(f"{API_HOST}:")

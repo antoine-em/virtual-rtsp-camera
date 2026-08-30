@@ -37,9 +37,27 @@ def test_help() -> None:
 
 
 def test_version() -> None:
+    """The reported version must be the real one, not merely present.
+
+    This used to assert only that the word "vcam" appeared, so it stayed green
+    while `__version__` sat two releases behind pyproject.toml.
+    """
+    from importlib.metadata import version as distribution_version
+
     result = invoke("--version")
     assert result.exit_code == 0
-    assert "vcam" in result.output
+    assert result.output.strip() == f"vcam {distribution_version('vcam')}"
+
+
+def test_the_packaged_version_is_the_one_in_pyproject() -> None:
+    """Guards against going back to a hand-maintained copy of the version."""
+    tomllib = pytest.importorskip("tomllib")  # 3.11+; the check is enough there
+
+    from vcam import __version__
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+    assert __version__ == declared
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +97,9 @@ def test_add_appends_a_camera(tmp_path: Path, video_file: Path) -> None:
     path = tmp_path / "cameras.yaml"
     invoke("init", str(path), "--source", str(video_file))
 
-    result = invoke("add", str(video_file), "--config", str(path), "--name", "extra", "--port", "8600")
+    result = invoke(
+        "add", str(video_file), "--config", str(path), "--name", "extra", "--port", "8600"
+    )
     assert result.exit_code == 0
 
     stack = load_stack(path)
@@ -246,16 +266,12 @@ def test_password_without_username_is_rejected(video_file: Path) -> None:
 
 
 def test_invalid_password_characters_are_reported(video_file: Path) -> None:
-    result = invoke(
-        "run", "-s", str(video_file), "-u", "reader", "-P", "bad pass", "--dry-run"
-    )
+    result = invoke("run", "-s", str(video_file), "-u", "reader", "-P", "bad pass", "--dry-run")
     assert result.exit_code == 1
     assert "MediaMTX" in result.output
 
 
-def test_config_and_inline_cameras_are_mutually_exclusive(
-    tmp_path: Path, video_file: Path
-) -> None:
+def test_config_and_inline_cameras_are_mutually_exclusive(tmp_path: Path, video_file: Path) -> None:
     path = tmp_path / "cameras.yaml"
     invoke("init", str(path), "--source", str(video_file))
 
@@ -423,4 +439,3 @@ def test_generate_with_auth(tmp_path: Path) -> None:
     stack = load_stack(out)
     assert stack.server.auth is not None
     assert stack.server.auth.username == "admin"
-

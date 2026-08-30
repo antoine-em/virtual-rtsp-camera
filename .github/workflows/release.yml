@@ -110,6 +110,10 @@ jobs:
             org.opencontainers.image.vendor=Konekuto
             org.opencontainers.image.licenses=MIT
 
+      - name: Pin today's apt snapshot
+        id: apt
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v7
         with:
@@ -118,6 +122,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APT_SNAPSHOT=${{ steps.apt.outputs.date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

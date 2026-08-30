@@ -50,10 +50,7 @@ def test_unsupported_platform_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_asset_and_url_naming() -> None:
-    assert (
-        binaries.asset_name("v1.19.3", "linux_arm64")
-        == "mediamtx_v1.19.3_linux_arm64.tar.gz"
-    )
+    assert binaries.asset_name("v1.19.3", "linux_arm64") == "mediamtx_v1.19.3_linux_arm64.tar.gz"
     assert binaries.asset_name("v1.19.3", "windows_amd64").endswith(".zip")
     assert binaries.asset_url("v1.19.3", "linux_arm64").startswith(
         "https://github.com/bluenviron/mediamtx/releases/download/v1.19.3/"

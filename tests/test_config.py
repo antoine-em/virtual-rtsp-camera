@@ -205,7 +205,7 @@ def test_invalid_config_reports_field_path(tmp_path: Path, video_file: Path) -> 
         tmp_path,
         {"cameras": [{"name": "bad name", "source": str(video_file)}]},
     )
-    with pytest.raises(ConfigError, match="cameras.0.name"):
+    with pytest.raises(ConfigError, match=r"cameras\.0\.name"):
         load_stack(path)
 
 
