@@ -39,9 +39,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   costs about 6x the file size in memory at roughly 15 MB/s, so the old limit
   quietly allowed a ~3 GB resident set. The refusal message states the memory a
   load would need.
+- Replay warns when the host could not keep pace with the capture. Late packets
+  were counted but never reported, and absolute deadlines keep the stream in
+  sync regardless, so the operator had no way to see it.
 
 ### Fixed
 
+- `--sdp` descriptions were modified in place while a capture was being
+  matched, dropping any media block the capture had no stream for.
 - `vcam --version` reported the wrong version. It was hardcoded in
   `vcam/__init__.py` and had drifted two releases behind `pyproject.toml`; it is
   now read from the installed distribution.

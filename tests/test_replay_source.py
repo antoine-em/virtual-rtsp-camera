@@ -15,13 +15,14 @@ from captures import (
     write_interleaved_capture,
     write_udp_capture,
 )
-from vcam import replay_source
-from vcam.pcap import PcapWriter
+from vcam import replay_source, sdp
+from vcam.pcap import Datagram, PcapWriter
 from vcam.replay_source import (
     MAX_CAPTURE_BYTES_ENV,
     ReplaySourceError,
     StreamClock,
     TcpStream,
+    _heuristic_tracks,
 )
 
 # -- TCP reassembly ---------------------------------------------------------
@@ -218,6 +219,32 @@ def test_sdp_override_replaces_the_captured_description(tmp_path: Path) -> None:
     source = replay_source.load(path, sdp_override=override)
     assert "H265/90000" in source.sdp_text()
     assert source.timeline
+
+
+def test_heuristics_do_not_mutate_the_supplied_description() -> None:
+    """The --sdp description belongs to the caller, so it must survive the call.
+
+    The capture here carries one stream while the description names two, which
+    is the shape that used to strip the surplus media block off the operator's
+    own object as a side effect of building the reply.
+    """
+    supplied = sdp.parse(SDP_TEXT + "m=audio 0 RTP/AVP 97\r\na=rtpmap:97 opus/48000/2\r\n")
+    before = [list(media.lines) for media in supplied.media]
+    datagrams = [
+        Datagram(
+            ts=100.0 + index * 0.01,
+            proto="udp",
+            src=SERVER_RTP,
+            dst=CLIENT_RTP,
+            payload=packet,
+        )
+        for index, packet in enumerate(rtp_series(3, ssrc=0x1111))
+    ]
+
+    _, description = _heuristic_tracks(datagrams, [], supplied)
+
+    assert [list(media.lines) for media in supplied.media] == before
+    assert description is not supplied
 
 
 def test_missing_sdp_override_is_reported(tmp_path: Path) -> None:

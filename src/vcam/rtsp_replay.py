@@ -78,6 +78,16 @@ class _InterleavedTransport(_Transport):
 
 
 class _UdpTransport(_Transport):
+    """Sends one track over UDP, holding both halves of an RTP/RTCP port pair.
+
+    Nothing is ever written to *rtcp*, which looks like a spare object until
+    you try to remove it: RFC 3550 pairs each even RTP port with the odd port
+    above it, and clients derive the RTCP port that way rather than being told
+    it. Dropping the socket would leave that port free for the OS to hand to
+    another stream, whose receiver reports would then arrive here. It is held
+    open to reserve the port, and closed with its partner.
+    """
+
     def __init__(self, sender: RtpSender, rtcp: RtpSender, address: tuple[str, int]) -> None:
         self._sender = sender
         self._rtcp = rtcp
@@ -108,6 +118,15 @@ class _Player(threading.Thread):
         self._pacer.stop()
 
     def run(self) -> None:
+        try:
+            self._play()
+        finally:
+            # Reported on every exit, including a reader that hung up mid-pass:
+            # a stream that could not be paced is exactly the case an operator
+            # needs to hear about, and it is most often cut short.
+            self._report_pacing()
+
+    def _play(self) -> None:
         server = self._server
         source = server.source
         timeline = source.timeline
@@ -142,6 +161,25 @@ class _Player(threading.Thread):
             # wait indefinitely rather than finish the file it is writing.
             self._connection.end_of_stream()
 
+    def _report_pacing(self) -> None:
+        """Tell the operator if this machine could not keep up with the capture.
+
+        The pacer counts packets it reached after their deadline had already
+        passed. Absolute deadlines mean those do not push the rest of the
+        stream late, so the replay stays in sync and the symptom is invisible
+        from the outside -- but the reader still received a burst instead of
+        the original spacing, which is worth knowing before blaming the camera.
+        """
+        late = self._pacer.late_packets
+        if not late:
+            return
+        logger.warning(
+            "replay: %d packet(s) were sent late to %s; this machine could not "
+            "keep pace with the capture",
+            late,
+            self._connection.peer,
+        )
+
     @staticmethod
     def _packet(
         entry: TimelineEntry,
@@ -171,6 +209,15 @@ class _Connection:
         self.server = server
         self.peer = peer
         self.session_id: str | None = None
+        """Handed out at SETUP and echoed back, but never checked on later requests.
+
+        That is a consequence of the design rather than a missing check: every
+        piece of session state lives on this connection object, so a request
+        can only ever reach the session belonging to the socket it arrived on.
+        There is no lookup table to address, and so nothing another client
+        could name. Enforcing the header would reject clients that send a
+        stale or absent Session line without protecting anything.
+        """
         self.transports: dict[int, _Transport] = {}
         self.player: _Player | None = None
         self._write_lock = threading.Lock()

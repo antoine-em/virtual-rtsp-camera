@@ -1,4 +1,8 @@
-"""Timing primitives for replay.
+"""Sending paced RTP to a reader.
+
+Two concerns live here because they are two halves of one job. `Pacer` decides
+*when* each packet goes out; `RtpSender` and `bind_rtp_pair` decide *where*,
+owning the UDP sockets and the even/odd port pairing RFC 3550 requires.
 
 Pacing is done against absolute deadlines derived from a single monotonic base
 rather than by sleeping each inter-packet gap in turn: sleeping accumulates the

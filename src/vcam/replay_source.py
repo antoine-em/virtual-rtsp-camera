@@ -572,9 +572,14 @@ def _heuristic_tracks(
         + ("" if preferred is not None else ", and assumed the codec from the payload type")
     )
 
-    description = preferred if preferred is not None else sdp.SessionDescription()
-    supplied = list(description.media)
-    description.media = []
+    description = sdp.SessionDescription(
+        # Built fresh rather than reusing *preferred*. Clearing and refilling
+        # the caller's description mutated the operator's --sdp in place, and
+        # when the capture held fewer streams than it described the surplus
+        # media blocks were silently dropped from the object they passed in.
+        session_lines=list(preferred.session_lines) if preferred is not None else []
+    )
+    supplied = list(preferred.media) if preferred is not None else []
     tracks: list[ReplayTrack] = []
     # Largest stream first: video before the audio or metadata side-channels.
     ordered = sorted(groups.values(), key=len, reverse=True)

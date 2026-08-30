@@ -7,6 +7,7 @@ value of this feature is entirely in what appears on the wire.
 from __future__ import annotations
 
 import base64
+import logging
 import socket
 import struct
 import threading
@@ -17,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from captures import rtp_series, write_interleaved_capture, write_udp_capture
-from vcam import replay_source, rtp
+from vcam import replay_source, rtp, rtsp_replay
 from vcam.rtsp_messages import InterleavedFrame, RtspMessage, RtspStreamParser
 from vcam.rtsp_replay import ReplayServer
 
@@ -383,6 +384,36 @@ def test_loop_steps_are_not_planned_when_they_cannot_be_used(udp_capture) -> Non
         == []
     )
     assert ReplayServer(source, host="127.0.0.1", port=0, loop=True).loop_steps
+
+
+def test_a_replay_the_machine_could_not_pace_is_reported(udp_capture, caplog) -> None:
+    """A late-packet count that only ever lands in memory helps nobody.
+
+    Absolute deadlines stop a late packet from dragging the rest of the stream
+    with it, so this failure is invisible from the outside: the operator sees a
+    stream that is still in sync and has no way to learn their machine was the
+    reason the spacing was wrong. The counter is only worth keeping if it is
+    said out loud.
+    """
+    path, _ = udp_capture
+    source = replay_source.load(path)
+    server = ReplayServer(source, host="127.0.0.1", port=0)
+    local, remote = socket.socketpair()
+    try:
+        connection = rtsp_replay._Connection(local, server, "10.0.0.9:5555")
+        player = rtsp_replay._Player(connection)
+
+        with caplog.at_level(logging.WARNING):
+            player._report_pacing()
+        assert caplog.text == "", "a replay that kept pace should say nothing"
+
+        player._pacer.late_packets = 3
+        with caplog.at_level(logging.WARNING):
+            player._report_pacing()
+        assert "3 packet(s) were sent late to 10.0.0.9:5555" in caplog.text
+    finally:
+        local.close()
+        remote.close()
 
 
 def test_speed_must_be_positive(udp_capture) -> None:
