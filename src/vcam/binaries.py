@@ -15,14 +15,12 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
+from .errors import BinaryError
+
 DEFAULT_VERSION = "v1.20.1"
 RELEASE_BASE = "https://github.com/bluenviron/mediamtx/releases/download"
 ENV_BINARY = "VCAM_MEDIAMTX_BIN"
 ENV_CACHE = "VCAM_CACHE_DIR"
-
-
-class BinaryError(RuntimeError):
-    """Raised when the MediaMTX binary cannot be resolved."""
 
 
 def cache_dir() -> Path:

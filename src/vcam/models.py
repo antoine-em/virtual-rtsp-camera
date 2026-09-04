@@ -134,6 +134,22 @@ class SimulationSpec(BaseModel):
         description="Extra ffmpeg filters appended to the chain, e.g. 'gblur=sigma=2'",
     )
 
+    @field_validator("filters")
+    @classmethod
+    def _check_filters(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        # Filters are passed to ffmpeg via exec argv (never a shell), so the
+        # goal is to reject clearly unintended input rather than to sandbox.
+        # Legitimate chains need : (params), ' (quoting), and = (key/value).
+        import re
+        if not re.match(r"^[a-zA-Z0-9\[\]{}(),=;:_\-.' ]+$", value):
+            raise ValueError(
+                f"ffmpeg filter contains unsupported characters: {value!r}. "
+                f"Allowed: alphanumeric, spaces, and []{{}},=;:_-.'"
+            )
+        return value
+
     @property
     def is_temporal(self) -> bool:
         return self.mode in TEMPORAL_SIMULATION_MODES
@@ -328,10 +344,15 @@ class CameraStack(BaseModel):
         return [replay for replay in self.replays if replay.enabled]
 
     def effective_port(self, camera: CameraSpec) -> int:
+        """RTSP port actually used by a camera (its override or the server's default)."""
         return camera.port or self.server.rtsp_port
 
     def publish_url(self, camera: CameraSpec) -> str:
-        """Loopback URL the local ffmpeg publisher pushes to (never authenticated)."""
+        """Internal URL the local ffmpeg publisher pushes to (loopback, no authentication).
+
+        This is used only for local inter-process communication between ffmpeg and
+        MediaMTX; external clients should use read_url.
+        """
         return f"rtsp://127.0.0.1:{self.effective_port(camera)}/{camera.path_suffix()}"
 
     def replay_url(
@@ -341,6 +362,11 @@ class CameraStack(BaseModel):
         *,
         with_credentials: bool = True,
     ) -> str:
+        """Public URL for reading a replayed capture from a client.
+
+        The replay runs its own RTSP server on its own port (not the shared
+        MediaMTX instance).
+        """
         display_host = host or self.display_host()
         credentials = ""
         if with_credentials and self.server.auth is not None:
@@ -357,7 +383,11 @@ class CameraStack(BaseModel):
         *,
         with_credentials: bool = True,
     ) -> str:
-        """URL a client uses to read the camera."""
+        """Public URL a client uses to read a camera's RTSP stream.
+
+        The camera is served from the shared MediaMTX server instance on either
+        its configured port or the server's default port.
+        """
         display_host = host or self.display_host()
         credentials = ""
         if with_credentials and self.server.auth is not None:
@@ -369,6 +399,7 @@ class CameraStack(BaseModel):
         return f"rtsp://{credentials}{display_host}:{port}/{camera.path_suffix()}"
 
     def display_host(self) -> str:
+        """Hostname to use in URLs (127.0.0.1 if server is bound to all interfaces)."""
         if self.server.host in ("0.0.0.0", "::", ""):
             return "127.0.0.1"
         return self.server.host

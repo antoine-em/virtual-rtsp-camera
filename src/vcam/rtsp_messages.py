@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from .errors import RtspFramingError
+
 INTERLEAVED_MAGIC = 0x24  # b"$"
 INTERLEAVED_HEADER_LENGTH = 4
 _HEADER_TERMINATOR = b"\r\n\r\n"
@@ -18,10 +20,6 @@ _HEADER_TERMINATOR = b"\r\n\r\n"
 #: Guard against a stream that never produces a terminator (truncated capture,
 #: or binary data misread as the start of a message).
 MAX_HEADER_LENGTH = 64 * 1024
-
-
-class RtspFramingError(ValueError):
-    """Raised when a stream cannot be framed as RTSP and must be abandoned."""
 
 
 @dataclass(frozen=True)

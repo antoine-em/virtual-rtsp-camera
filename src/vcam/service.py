@@ -21,11 +21,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import ServiceError
+
 SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-
-class ServiceError(RuntimeError):
-    """Raised when a service operation cannot be performed."""
 
 
 @dataclass(frozen=True)

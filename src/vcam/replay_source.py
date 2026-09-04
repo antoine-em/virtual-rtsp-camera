@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import rtp, sdp
+from .errors import ReplaySourceError
 from .pcap import Datagram, PcapError, iter_datagrams
 from .rtsp_messages import (
     InterleavedFrame,
@@ -53,10 +54,6 @@ MAX_CAPTURE_BYTES_ENV = "VCAM_MAX_CAPTURE_BYTES"
 #: Credentials that survive into a capture verbatim (SEC-001).
 _CREDENTIAL_HEADERS = ("authorization", "www-authenticate", "proxy-authorization")
 _URI_CREDENTIALS_RE = re.compile(r"rtsps?://[^/\s:@]+:[^/\s@]+@", re.IGNORECASE)
-
-
-class ReplaySourceError(RuntimeError):
-    """Raised when a capture cannot be turned into a replayable session."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +124,23 @@ class TimelineEntry:
 
 @dataclass
 class ReplaySource:
+    """Plays back a captured RTSP session verbatim from a PCAP file.
+
+    Holds the timeline of all packets in the capture, handles looping
+    (with optional RTP sequence/timestamp rewriting to keep streams monotonic),
+    and provides track metadata for clients to negotiate.
+
+    Attributes:
+        path: Path to the .pcap/.pcapng capture file.
+        loop: If True, restart playback from the beginning when reaching the end.
+        speed: Playback speed multiplier (1.0 = real-time).
+        rewrite_on_loop: If True, increment RTP sequence numbers and timestamps
+            across loops to maintain monotonicity. Disable only to reproduce
+            raw, discontinuous looping for testing edge cases.
+        tracks: List of ReplayTrack objects, one per media stream in the capture.
+        session_description: The SDP session description from the capture or override.
+        timeline: List of TimelineEntry objects mapping capture time to packets.
+    """
     path: Path
     description: sdp.SessionDescription
     tracks: list[ReplayTrack]

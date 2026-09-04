@@ -18,6 +18,8 @@ import struct
 import time
 from pathlib import Path
 
+from .errors import NTPError
+
 #: Seconds between the NTP epoch (1 Jan 1900) and the Unix epoch (1 Jan 1970).
 _NTP_DELTA = 2_208_988_800
 
@@ -65,10 +67,6 @@ def has_sys_time_cap() -> bool:
 # ---------------------------------------------------------------------------
 # NTP measurement
 # ---------------------------------------------------------------------------
-
-
-class NTPError(OSError):
-    """Raised when all NTP query attempts fail."""
 
 
 def measure_offset(
