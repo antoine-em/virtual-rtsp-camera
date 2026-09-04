@@ -13,7 +13,7 @@ jobs:
   stale:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@v10
+      - uses: actions/stale@v11
         with:
           stale-issue-message: >
             This issue has been inactive for 45 days. It has been marked stale and will be
