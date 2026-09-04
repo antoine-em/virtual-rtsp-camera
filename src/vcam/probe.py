@@ -8,9 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-
-class ProbeError(RuntimeError):
-    """Raised when a source file cannot be inspected."""
+from .errors import ProbeError
 
 
 @dataclass(frozen=True)

@@ -16,14 +16,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
+from .errors import PcapError
+
 #: Ports below this are almost never used for dynamically negotiated RTP.
 _MIN_DYNAMIC_PORT = 1024
 
 _scapy: SimpleNamespace | None = None
-
-
-class PcapError(RuntimeError):
-    """Raised when a capture file cannot be read or written."""
 
 
 def _layers() -> SimpleNamespace:

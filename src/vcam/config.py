@@ -8,13 +8,10 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from .errors import ConfigError
 from .models import CameraSpec, CameraStack
 
 DEFAULT_CONFIG_NAMES = ("cameras.yaml", "cameras.yml", "vcam.yaml", "vcam.yml")
-
-
-class ConfigError(RuntimeError):
-    """Raised when a configuration file cannot be loaded."""
 
 
 def find_default_config(start: Path | None = None) -> Path | None:

@@ -17,14 +17,22 @@ from rich.table import Table
 
 from . import __version__, binaries
 from . import service as _service
+from .cli_helpers import OverridesResolver, RunContext
 from .config import (
-    ConfigError,
     dump_stack,
     example_stack,
     find_default_config,
     format_validation_error,
     load_stack,
     save_stack,
+)
+from .errors import (
+    ConfigError,
+    NTPError,
+    PcapError,
+    ProbeError,
+    ServiceError,
+    SupervisorError,
 )
 from .ffmpeg import build_publish_command, resolve_mode
 from .mediamtx import plan_instances, render_server_config_yaml
@@ -44,13 +52,11 @@ from .models import (
     VideoCodec,
     VideoSettings,
 )
-from .ntp import NTPError, apply_offset, has_sys_time_cap, measure_offset, running_in_container
-from .pcap import PcapError
+from .ntp import apply_offset, has_sys_time_cap, measure_offset, running_in_container
 from .pcap import backend_version as pcap_backend_version
-from .probe import ProbeError, try_probe
 from .probe import probe as probe_source
-from .service import ServiceError
-from .supervisor import REPLAY_PASSWORD_ENV, CameraRuntime, Supervisor, SupervisorError
+from .probe import try_probe
+from .supervisor import REPLAY_PASSWORD_ENV, CameraRuntime, Supervisor
 
 console = Console()
 error_console = Console(stderr=True)
@@ -209,43 +215,28 @@ def _apply_overrides(
     simulation: dict[str, object],
 ) -> None:
     """Apply CLI overrides in place; every override applies to all cameras."""
-    server = stack.server
-    if host is not None:
-        server.host = host
-    if port is not None:
-        server.rtsp_port = port
-    if api_port is not None:
-        server.api_port = api_port
-    if log_level is not None:
-        server.log_level = log_level
-    if ntp_server is not None:
-        server.ntp_server = ntp_server
-    if username or password:
-        if not (username and password):
-            raise _fail("--username and --password must be provided together")
-        server.auth = AuthSpec(username=username, password=password)
-
-    for camera in stack.cameras:
-        if mode is not None:
-            camera.mode = mode
-        if loop is not None:
-            camera.loop = loop
-        if realtime is not None:
-            camera.realtime = realtime
-        if start_offset is not None:
-            camera.start_offset = start_offset
-        if transport is not None:
-            camera.transport = transport
-        if audio is not None:
-            camera.audio = audio
-        if video:
-            camera.video = camera.video.model_copy(update=video)
-        if simulation:
-            # Validated (unlike model_copy) so bad CLI values are reported
-            # through the same ValidationError path as the rest.
-            camera.simulation = SimulationSpec.model_validate(
-                camera.simulation.model_dump() | simulation
-            )
+    resolver = OverridesResolver()
+    try:
+        resolver.apply_overrides(
+            stack,
+            host=host,
+            port=port,
+            api_port=api_port,
+            log_level=log_level,
+            username=username,
+            password=password,
+            ntp_server=ntp_server,
+            mode=mode,
+            loop=loop,
+            realtime=realtime,
+            start_offset=start_offset,
+            transport=transport,
+            audio=audio,
+            video=video,
+            simulation=simulation,
+        )
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -485,15 +476,26 @@ def run(
     else:
         resolved_work_dir = work_dir
 
-    supervisor = Supervisor(
-        stack,
-        binary,
+    context = RunContext(
+        stack=stack,
+        mediamtx_binary=binary,
         work_dir=resolved_work_dir,
         ffmpeg_log_level=ffmpeg_log_level,
         health_file=health_file,
         verify=verify,
         max_restarts=max_restarts,
-        on_ready=lambda runtimes: _print_ready(stack, runtimes),
+        verbose=verbose,
+    )
+
+    supervisor = Supervisor(
+        context.stack,
+        context.mediamtx_binary,
+        work_dir=context.work_dir,
+        ffmpeg_log_level=context.ffmpeg_log_level,
+        health_file=context.health_file,
+        verify=context.verify,
+        max_restarts=context.max_restarts,
+        on_ready=lambda runtimes: _print_ready(context.stack, runtimes),
     )
 
     try:

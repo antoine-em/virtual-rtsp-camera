@@ -18,6 +18,7 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from .errors import SupervisorError
 from .ffmpeg import build_publish_command, effective_mode
 from .mediamtx import UDP_BLOCK_SIZE, ServerInstance, plan_instances, write_server_config
 from .models import (
@@ -43,7 +44,35 @@ STABLE_RUNTIME = 20.0  # a publisher alive this long resets its backoff
 
 @dataclass
 class ManagedProcess:
-    """A supervised child process with restart backoff."""
+    """A supervised child process with exponential backoff restart strategy.
+
+    Monitors a child process and automatically restarts it on failure with
+    exponential backoff (1s, 2s, 4s, ..., max 30s). Successful runtimes >= 20s
+    reset the backoff counter, allowing new failures to restart quickly.
+
+    Lifecycle:
+        - start() launches the child and increments consecutive_failures on error.
+        - If a process runs >= STABLE_RUNTIME (20s), consecutive_failures resets.
+        - If consecutive_failures exceeds a threshold (configured elsewhere),
+          gave_up is set and restart is abandoned.
+        - The monitor thread checks retry_at deadlines and calls start() again.
+        - When suspended=True (for simulation-driven stops), the monitor leaves
+          the process alone; the simulation scheduler owns its stop/start cycle.
+
+    Attributes:
+        name: Human-readable process name for logging.
+        command: Command argv to execute.
+        kind: "server" or "publisher" (for logging).
+        env: Optional extra environment variables (merged over os.environ).
+        process: The running subprocess.Popen, or None if not running.
+        restarts: Total number of restart attempts.
+        consecutive_failures: Failures since the last successful run.
+        started_at: Wall-clock time when the process started.
+        last_exit_code: Exit code from the last run.
+        retry_at: Wall-clock time to attempt the next restart.
+        gave_up: If True, restart has been abandoned.
+        suspended: If True, this process is paused by a simulation scheduler.
+    """
 
     name: str
     command: list[str]
@@ -213,10 +242,6 @@ def build_replay_env(stack: CameraStack) -> dict[str, str]:
     if stack.server.auth is None:
         return {}
     return {REPLAY_PASSWORD_ENV: stack.server.auth.password}
-
-
-class SupervisorError(RuntimeError):
-    """Raised when the supervisor cannot start."""
 
 
 class SimulationScheduler:
