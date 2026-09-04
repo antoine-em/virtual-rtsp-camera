@@ -143,6 +143,7 @@ class SimulationSpec(BaseModel):
         # goal is to reject clearly unintended input rather than to sandbox.
         # Legitimate chains need : (params), ' (quoting), and = (key/value).
         import re
+
         if not re.match(r"^[a-zA-Z0-9\[\]{}(),=;:_\-.' ]+$", value):
             raise ValueError(
                 f"ffmpeg filter contains unsupported characters: {value!r}. "
